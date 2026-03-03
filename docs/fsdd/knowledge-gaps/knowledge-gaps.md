@@ -77,76 +77,107 @@ This document tracks known unknowns, areas where AI agents are likely to get con
 
 ---
 
+## RESOLVED GAPS (POC Validated)
+
+### ~~GAP-2: Amber V2 as a Native App Framework~~ — RESOLVED (POC 1)
+
+**Resolution:** Validated that `require "amber"` works without starting the HTTP server. Tested:
+- `Amber.settings.name = "Scribe POC"` — configuration works standalone
+- `Amber.env` — environment detection works
+- Controllers can be defined and used as event handlers
+- **Important:** `Amber::Server.configure` triggers HTTP initialization. Use `Amber.settings.*=` directly instead.
+- The Amber form parser example output appears on startup (minor nuisance, not blocking)
+
+**Agent Guidance:** Use `Amber.settings` directly, NOT `Amber::Server.settings` or `Amber::Server.configure`. The latter creates a server instance.
+
+---
+
+### ~~GAP-4: Global Keyboard Shortcut Implementation~~ — RESOLVED (POC 2)
+
+**Resolution:** Carbon `RegisterEventHotKey` works from Crystal via a thin C bridge (`hotkey_bridge.c`):
+- Event handler installs cleanly
+- Multiple hotkeys can be registered (tested Option+Shift+R and Option+Shift+S)
+- Callback fires on the Crystal side when hotkey is pressed
+- CFRunLoopRun() works as the event loop (deprecated RunApplicationEventLoop replaced)
+- Non-blocking `hotkey_pump_events()` available for integration with other event loops
+
+**Pattern:** C bridge file → Crystal `lib` bindings → Crystal wrapper module
+
+**Agent Guidance:** The hotkey bridge is at `poc/keyboard-shortcuts/ext/hotkey_bridge.c`. This exact pattern can be moved to `src/platform/macos/` for production use.
+
+---
+
+### ~~GAP-6: Clipboard Management & Paste Simulation~~ — RESOLVED (POC 3)
+
+**Resolution:** All clipboard operations work from Crystal via ObjC bridge (`clipboard_bridge.m`):
+- Clipboard read: reads NSPasteboard general pasteboard as UTF-8
+- Clipboard write: clears + writes string to pasteboard
+- Change count tracking: NSPasteboard changeCount increments properly
+- Clipboard cycle (save → write → restore): works perfectly, no data loss
+- Paste simulation: CGEvent Cmd+V injection compiles — requires Accessibility permission at runtime
+
+**iOS Limitation confirmed:** Paste simulation not possible on iOS. Clipboard copy only.
+
+**Agent Guidance:** The clipboard bridge is at `poc/clipboard-api/ext/clipboard_bridge.m`. The clipboard cycle (save, write transcription, paste, restore original) pattern is proven and ready for production.
+
+---
+
 ## REMAINING GAPS
 
-### GAP-2: Amber V2 as a Native App Framework (MEDIUM — Design Decision Made)
+### GAP-9: Amber + Asset Pipeline Integration Pattern (PARTIALLY RESOLVED)
 
-**Status:** Architectural decision made (Landmark 2), but implementation pattern needs validation.
+**Status:** POC 1 validated the basic pipeline. Remaining: controller → view update flow.
 
-**The Gap:** We've decided to use Amber patterns without the HTTP server, but we need to validate:
-1. Can we `require "amber"` without starting the server?
-2. Which Amber modules work standalone (controllers, configuration, helpers)?
-3. How to replace Amber's HTTP pipeline with an event-driven architecture?
+**What's Proven:**
+1. Amber can be loaded without HTTP server ✓
+2. Asset Pipeline UI views can be created (VStack, Label, Button, Spacer) ✓
+3. AppKit renderer produces native NativeView objects ✓
+4. The view tree and renderer compile and execute correctly ✓
 
-**Agent Confusion Risk:** MEDIUM — An agent may try to use `Amber::Server.start` or HTTP routing.
+**What's NOT Proven:**
+- How controllers push updates to an already-rendered view tree (reactive updates)
+- Window creation and view mounting (NSWindow + NSApplication event loop)
+- Button click callbacks propagating from native views back to Crystal
 
-**Recommended Action:** Create a minimal proof-of-concept that requires Amber but uses an event loop instead of HTTP. Document which Amber modules are used and which are skipped.
-
----
-
-### GAP-4: Global Keyboard Shortcut Implementation (MEDIUM)
-
-**Status:** FFI infrastructure proven (via asset_pipeline and crystal-audio), but specific shortcut API not yet bound.
-
-**The Gap:** Global keyboard shortcuts require:
-- **macOS:** CGEvent tap (Accessibility permission) or Carbon `RegisterEventHotKey`
-- **iOS:** Siri Shortcuts integration (no true global shortcuts)
-- **Android:** Accessibility Service or media button interception
-
-**What's Changed:** The asset_pipeline's ObjC bridge and crystal-audio's FFI patterns prove that Crystal-to-ObjC calls work reliably. The same patterns can be applied to CGEvent or Carbon hotkey APIs.
-
-**Agent Confusion Risk:** LOW (reduced from MEDIUM) — The FFI patterns are now well-established. An agent can follow the same `lib` binding + typed wrapper approach used in crystal-audio.
-
-**Recommended Action:** Implement macOS global shortcut using Carbon `RegisterEventHotKey` (simplest, most reliable) following crystal-audio's FFI patterns. Create `Scribe::Platform::MacosShortcutListener` with the same abstract class pattern.
+**Recommended Action:** Extend POC 1 to create an NSWindow, mount the rendered view, and run an NSApplication event loop. This would prove the full lifecycle.
 
 ---
 
-### GAP-6: Clipboard Management & Paste Simulation (MEDIUM)
+### GAP-10: Asset Pipeline Platform Flag Configuration (NEW — LOW)
 
-**Status:** Clipboard read/write is straightforward FFI; paste simulation requires additional research.
+**Status:** Discovered and documented. Workaround known.
 
-**The Gap:**
-- **Clipboard read/write:** NSPasteboard (macOS), UIPasteboard (iOS), ClipboardManager (Android) — all simple FFI following proven patterns
-- **Paste simulation:** Requires CGEvent to inject Cmd+V keystroke (macOS), which needs Accessibility permission
+**The Gap:** crystal-alpha sets `flag?(:darwin)` and `flag?(:apple)` on macOS but does NOT set `flag?(:macos)`. The Asset Pipeline AppKit renderer gates on `flag?(:macos)`, so building without `-Dmacos` gives the Web renderer fallback instead.
 
-**iOS Limitation:** Paste simulation is not possible on iOS without private APIs. iOS output must be clipboard-only (no auto-paste).
+**Workaround:** Pass `-Dmacos` to crystal-alpha when building for macOS:
+```bash
+crystal-alpha build src/scribe.cr -o bin/scribe -Dmacos --link-flags="..."
+```
 
-**Agent Confusion Risk:** LOW for clipboard operations (proven FFI patterns), MEDIUM for paste simulation.
+Similarly, for iOS use `-Dios` and for Android use `-Dandroid`.
 
-**Recommended Action:**
-1. Clipboard read/write: Follow crystal-audio's ObjC FFI patterns for NSPasteboard
-2. Paste simulation (macOS): Research `CGEventCreateKeyboardEvent` for Cmd+V injection
-3. Accept iOS limitation: clipboard copy only, user pastes manually
+**Agent Confusion Risk:** HIGH — An agent will not know to pass `-Dmacos` unless told. Without it, the build succeeds but uses the wrong renderer.
+
+**Recommended Action:** Document in CLAUDE.md and build skill. Consider adding auto-detection to the Asset Pipeline (e.g., `flag?(:darwin) && !flag?(:ios)` → macOS).
 
 ---
 
-### GAP-9: Amber + Asset Pipeline Integration Pattern (NEW — MEDIUM)
+### GAP-11: Asset Pipeline objc_bridge.m Not Shipped with Shard (NEW — MEDIUM)
 
-**Status:** Needs validation
+**Status:** Created manually, needs to be committed to asset_pipeline repo.
 
-**The Gap:** How exactly do Amber controllers interact with Asset Pipeline UI views in a native (non-web) context?
+**The Gap:** The Asset Pipeline's AppKit renderer (`appkit_renderer.cr`) declares `lib LibObjCBridge` with ~30 function signatures, but the C implementation file (`objc_bridge.m`) did not exist in the repository. Without it, any project using the AppKit renderer fails at link time with undefined symbols.
 
-- In web mode, Amber controllers render HTML through Asset Pipeline components
-- In native mode, we need controllers to update native views through the platform renderer
-- The event-driven architecture (Landmark 8) needs to bridge Amber's patterns with Asset Pipeline's view tree
+**What Was Done:** Created `src/ui/native/objc_bridge.m` implementing all required functions:
+- 10 typed objc_msgSend wrappers (pointer/integer args)
+- 4 floating-point register wrappers (ARM64 d-registers)
+- 3 CGRect/HFA wrappers
+- 11 convenience helpers (NSString, NSColor, NSFont, NSView utilities)
+- Must compile with `-fno-objc-arc` (Crystal's NativeHandle manages lifetimes)
 
-**Recommended Action:** Define the native controller → view update pattern:
-1. Controller handles event
-2. Controller delegates to process manager
-3. Process manager returns results
-4. Controller passes results to view updater
-5. View updater modifies the UI::View tree
-6. Platform renderer applies diff to native views
+**Agent Confusion Risk:** HIGH — An agent attempting to build a native macOS app will hit linker errors for ~20 undefined symbols and have no way to resolve them without creating this file.
+
+**Recommended Action:** Commit `objc_bridge.m` to the asset_pipeline repo on the feature branch. Add a Makefile or build instruction for compiling it. Update the shard to include pre-compilation instructions.
 
 ---
 

@@ -25,9 +25,18 @@ Scribe is a native cross-platform dictation app built with Crystal (via crystal-
 
 ## Compiler
 
-Use `crystal-alpha` (NOT `crystal`) for all builds:
+Use `crystal-alpha` (NOT `crystal`) for all builds. **CRITICAL:** You MUST pass `-Dmacos` when building for macOS (the Asset Pipeline AppKit renderer gates on this flag):
 ```bash
-crystal-alpha build src/scribe.cr -o bin/scribe --link-flags="..."
+crystal-alpha build src/scribe.cr -o bin/scribe -Dmacos --link-flags="..."
+```
+Similarly: `-Dios` for iOS, `-Dandroid` for Android.
+
+## Amber Configuration
+
+Use `Amber.settings` directly — do NOT use `Amber::Server.configure` or `Amber::Server.settings`:
+```crystal
+Amber.settings.name = "Scribe"  # Correct
+# Amber::Server.configure { ... }  # WRONG — creates HTTP server instance
 ```
 
 ## Development Methodology
@@ -66,12 +75,22 @@ src/
 
 ```bash
 shards install
+
+# Compile Asset Pipeline ObjC bridge (required for native AppKit rendering)
+clang -c lib/asset_pipeline/src/ui/native/objc_bridge.m \
+  -o lib/asset_pipeline/src/ui/native/objc_bridge.o -fno-objc-arc
+
+# Compile Crystal audio native extensions
 cd lib/crystal-audio && make ext && cd ../..
-crystal-alpha build src/scribe.cr -o bin/scribe \
-  --link-flags="lib/crystal-audio/ext/*.o \
+
+# Build Scribe (-Dmacos is REQUIRED for AppKit renderer)
+crystal-alpha build src/scribe.cr -o bin/scribe -Dmacos \
+  --link-flags="lib/asset_pipeline/src/ui/native/objc_bridge.o \
+    lib/crystal-audio/ext/*.o \
+    -framework AppKit -framework Foundation \
     -framework AVFoundation -framework AudioToolbox -framework CoreAudio \
-    -framework CoreFoundation -framework CoreMedia -framework Foundation \
-    -framework ScreenCaptureKit"
+    -framework CoreFoundation -framework CoreMedia \
+    -framework ScreenCaptureKit -lobjc"
 ./bin/scribe
 ```
 
