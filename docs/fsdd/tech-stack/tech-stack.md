@@ -52,8 +52,9 @@
 - **CoreAudio:** Low-level audio capture (via crystal-audio AudioQueue)
 - **AppKit:** Native UI rendering (via asset_pipeline AppKit Renderer)
 - **UIKit:** Native iOS UI (via asset_pipeline UIKit Renderer)
-- **NSPasteboard:** Clipboard operations (new FFI needed — follows proven patterns)
-- **CGEvent:** Global keyboard shortcuts + paste simulation (new FFI needed)
+- **NSPasteboard:** Clipboard read/write/cycle — POC validated, bridge at `poc/clipboard-api/ext/clipboard_bridge.m`
+- **Carbon RegisterEventHotKey:** Global keyboard shortcuts — POC validated, bridge at `poc/keyboard-shortcuts/ext/hotkey_bridge.c`
+- **CGEvent:** Paste simulation (Cmd+V injection) — POC validated, requires Accessibility permission
 
 ### Google Android APIs (accessed via crystal-audio + asset_pipeline)
 - **AAudio:** Audio recording and playback (via crystal-audio)
@@ -76,8 +77,8 @@
 | Audio Recording | crystal-audio (mic: AudioQueue/AVAudioEngine/AAudio) |
 | Audio File Management | crystal-audio (WAV/M4A output) |
 | Transcription | crystal-audio (whisper.cpp + Claude API pipeline) |
-| Clipboard Management | New FFI (NSPasteboard/UIPasteboard/ClipboardManager) — follows proven patterns |
-| Global Shortcuts | New FFI (CGEvent/Carbon) — follows proven patterns |
+| Clipboard Management | NSPasteboard (macOS, POC validated), UIPasteboard (iOS), ClipboardManager (Android) |
+| Global Shortcuts | Carbon RegisterEventHotKey (macOS, POC validated), Accessibility Service (Android) |
 | Output File Management | Crystal (File I/O), SQLite |
 | AI Post-Processing | Anthropic Claude Code CLI (external process) |
 | Configuration Storage | SQLite via Grant ORM, Amber configuration patterns |
@@ -94,24 +95,67 @@
 | Claude API | Transcription cleanup (crystal-audio pipeline) |
 | SQLite schema | Configuration, history, templates |
 
+## Compile-Time Platform Targets
+
+**CRITICAL:** crystal-alpha requires explicit `-D` flags for platform renderer selection. Without the flag, Asset Pipeline defaults to Web renderer.
+
+| Target | Flag | Renderer | Auto-detected flags |
+|--------|------|----------|-------------------|
+| macOS | `-Dmacos` | `UI::AppKit::Renderer` | `:darwin`, `:apple` |
+| iOS | `-Dios` | `UI::UIKit::Renderer` | `:darwin`, `:apple` |
+| Android | `-Dandroid` | `UI::Android::Renderer` | — |
+| Linux | (none needed) | `UI::Web::Renderer` | — |
+| Web | (none needed) | `UI::Web::Renderer` | — |
+
 ## Build Pipeline Summary
+
+### Prerequisites (one-time)
+```bash
+shards install
+# Compile Asset Pipeline ObjC bridge (macOS/iOS targets)
+clang -c lib/asset_pipeline/src/ui/native/objc_bridge.m \
+  -o lib/asset_pipeline/src/ui/native/objc_bridge.o -fno-objc-arc
+# Compile crystal-audio native extensions
+cd lib/crystal-audio && make ext && cd ../..
+```
 
 ### Development (macOS)
 ```bash
-crystal-alpha build src/scribe.cr -o bin/scribe \
-  --link-flags="lib/crystal-audio/ext/*.o [frameworks]"
+crystal-alpha build src/scribe.cr -o bin/scribe -Dmacos \
+  --link-flags="lib/asset_pipeline/src/ui/native/objc_bridge.o \
+    lib/crystal-audio/ext/*.o \
+    -framework AppKit -framework Foundation -framework AVFoundation \
+    -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
+    -framework CoreMedia -framework ScreenCaptureKit -lobjc"
 ```
 
-### iOS
+### iOS (cross-compile)
 ```bash
 # One-time: ./scripts/cross_compile_deps.sh ios
-./scripts/build_ios.sh src/scribe.cr device scribe
-# → build/ios-device/libscribe.dylib → Add to Xcode project
+crystal-alpha build src/scribe.cr \
+  --cross-compile --target aarch64-apple-ios17.0 --shared \
+  -Dios -Dwithout_openssl -Dwithout_xml \
+  -o build/ios-device/scribe
+# → Link step in Xcode project
 ```
 
-### Android
+### Android (cross-compile)
 ```bash
+# Requires: Android NDK r28+, ANDROID_NDK_HOME set
 # One-time: ./scripts/cross_compile_deps.sh android
-./scripts/build_android.sh src/scribe.cr scribe
-# → build/android-arm64/libscribe.so → Add to Android Studio
+crystal-alpha build src/scribe.cr \
+  --cross-compile --target aarch64-linux-android31 --shared \
+  -Dandroid -Dwithout_openssl -Dwithout_xml \
+  -o build/android/scribe
+# → Copy .so to jniLibs/arm64-v8a/ in Android Studio project
 ```
+
+## Current Compilation Status
+
+| Target | Status | Blocking Issue |
+|--------|--------|---------------|
+| macOS | NOT COMPILING | `src/scribe.cr` still uses Amber web scaffold (wrong requires, starts HTTP server) |
+| iOS | NOT COMPILING | Same as macOS + no Xcode project yet |
+| Android | CANNOT TEST | Android NDK not installed |
+
+**Required to compile:** Rewrite `src/scribe.cr` to use native app entry point instead of web server scaffold.
