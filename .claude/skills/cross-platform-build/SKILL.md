@@ -20,12 +20,19 @@ Use this skill when building, compiling, or working on platform-specific code fo
 
 **macOS (development):**
 ```bash
-crystal-alpha build src/scribe.cr -o bin/scribe
+# MUST: compile ObjC bridge first + pass -Dmacos
+clang -c lib/asset_pipeline/src/ui/native/objc_bridge.m \
+  -o lib/asset_pipeline/src/ui/native/objc_bridge.o -fno-objc-arc
+crystal-alpha build src/scribe.cr -o bin/scribe -Dmacos \
+  --link-flags="lib/asset_pipeline/src/ui/native/objc_bridge.o \
+    -framework AppKit -framework Foundation -lobjc"
 ```
 
 **macOS (release):**
 ```bash
-crystal-alpha build src/scribe.cr -o bin/scribe --release
+crystal-alpha build src/scribe.cr -o bin/scribe -Dmacos --release \
+  --link-flags="lib/asset_pipeline/src/ui/native/objc_bridge.o \
+    -framework AppKit -framework Foundation -lobjc"
 ```
 
 **iOS Device:**
@@ -55,13 +62,20 @@ crystal-alpha build src/scribe.cr \
 
 ### Compile-Time Platform Flags
 
-Use these in Crystal source for platform-specific code:
+**CRITICAL:** crystal-alpha does NOT auto-set `:macos`, `:ios`, or `:android`. You MUST pass them via `-D`:
+- `-Dmacos` → enables AppKit renderer
+- `-Dios` → enables UIKit renderer
+- `-Dandroid` → enables Android renderer
+
+Without the flag, the Asset Pipeline silently falls back to the Web renderer.
+
+Flags available in Crystal source:
 ```crystal
-{% if flag?(:macos) %}    # macOS (AppKit available)
-{% if flag?(:ios) %}      # iOS (UIKit available)
-{% if flag?(:android) %}  # Android (JNI available)
-{% if flag?(:darwin) %}   # macOS + iOS (ObjC runtime)
-{% if flag?(:apple) %}    # All Apple platforms
+{% if flag?(:macos) %}    # macOS — only if -Dmacos was passed
+{% if flag?(:ios) %}      # iOS — only if -Dios was passed
+{% if flag?(:android) %}  # Android — only if -Dandroid was passed
+{% if flag?(:darwin) %}   # Always true on macOS (auto-detected)
+{% if flag?(:apple) %}    # Always true on macOS (auto-detected)
 ```
 
 ## UI Components: asset_pipeline
@@ -81,7 +95,7 @@ Use these in Crystal source for platform-specific code:
 
 The same UI code renders natively on each platform:
 ```crystal
-require "ui"
+require "asset_pipeline/ui"
 
 # This single view definition works on ALL platforms:
 view = UI::VStack.new(spacing: 12.0).tap do |v|
