@@ -4,7 +4,7 @@ version: 0.1.0
 authors:
   - Your Name <your.email@example.com>
 
-crystal: ">= 1.10.0"
+crystal: ">= 1.15.0"
 
 license: UNLICENSED
 
@@ -23,9 +23,15 @@ dependencies:
     github: crimson-knight/grant
     branch: main
 
-  # Asset Pipeline (native ESM, no Webpack/npm required)
+  # Asset Pipeline (cross-platform UI + native ESM, no Webpack/npm required)
+  # IMPORTANT: Must use the feature branch for cross-platform UI support
   asset_pipeline:
     github: amberframework/asset_pipeline
+    branch: feature/utility-first-css-asset-pipeline
+
+  # Audio recording, playback, and transcription
+  crystal-audio:
+    github: crimson-knight/crystal-audio
 
   # File uploads (optional)
   gemma:
