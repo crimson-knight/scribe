@@ -29,12 +29,13 @@ dist/
 # Shard override (local dev only)
 shard.override.yml
 
-# Android build cache
+# Android build cache and output
 mobile/android/.gradle/
 mobile/android/build/
 mobile/android/app/build/
 mobile/android/local.properties
 mobile/android/.idea/
+*.apk
 
 # iOS build artifacts
 mobile/ios/build/
