@@ -290,3 +290,5 @@ Project Manager (you)
 - Cross-compilation: Implementor must reference `asset_pipeline/scripts/` and `CROSS_COMPILE.md`
 - New FFI (clipboard, shortcuts): Team lead should assign research first — follow patterns from crystal-audio's `ext/` directory
 - The Scribe project skill at `.claude/skills/cross-platform-build/SKILL.md` contains the complete build reference
+- **C callbacks in lib blocks:** Always use `alias` NOT `type` for C function pointer types (GAP-17)
+- **Makefile:** Always use `make macos` to build — handles all bridge compilation and linking

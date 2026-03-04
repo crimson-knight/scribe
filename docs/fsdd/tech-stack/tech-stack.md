@@ -152,10 +152,10 @@ crystal-alpha build src/scribe.cr \
 
 ## Current Compilation Status
 
-| Target | Status | Blocking Issue |
-|--------|--------|---------------|
-| macOS | NOT COMPILING | `src/scribe.cr` still uses Amber web scaffold (wrong requires, starts HTTP server) |
-| iOS | NOT COMPILING | Same as macOS + no Xcode project yet |
+| Target | Status | Notes |
+|--------|--------|-------|
+| macOS | COMPILING | `make macos` builds 5MB arm64 binary, NSApplication event loop runs |
+| iOS | NOT COMPILING | No Xcode project, cross-compile deps not built |
 | Android | CANNOT TEST | Android NDK not installed |
 
-**Required to compile:** Rewrite `src/scribe.cr` to use native app entry point instead of web server scaffold.
+**macOS build:** `make macos` (or `make run` to build and launch).

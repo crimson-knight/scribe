@@ -11,8 +11,8 @@
 
 | Target | Status | Blocking Issue |
 |--------|--------|---------------|
-| **macOS** | NO | `src/scribe.cr` uses web scaffold (wrong requires, starts HTTP server) |
-| **iOS** | NO | Same as macOS + no Xcode project |
+| **macOS** | YES (compiles and runs) | Amber schema examples print noise to stdout on startup |
+| **iOS** | NO | No Xcode project, cross-compile deps not built |
 | **Android** | CANNOT TEST | Android NDK not installed on dev machine |
 
 ### Root Cause
@@ -269,10 +269,10 @@ Tracked in `.claude/.ai-docs-info.yml` with dual checksums for safe updates.
 ## Part 5: Action Items (Priority Order)
 
 ### Immediate (before writing app code)
-1. Rewrite `src/scribe.cr` for native app entry point
-2. Create application directory structure (`process_managers/`, `ui/`, `platform/`, `events/`)
-3. Create a Makefile with per-platform build targets
-4. Compile crystal-audio native extensions
+1. ~~Rewrite `src/scribe.cr` for native app entry point~~ DONE
+2. ~~Create application directory structure (`process_managers/`, `ui/`, `platform/`, `events/`)~~ DONE
+3. ~~Create a Makefile with per-platform build targets~~ DONE (macOS target; iOS/Android pending)
+4. Compile crystal-audio native extensions (needed when integrating audio)
 
 ### Near-term (library publishing)
 5. Push Asset Pipeline changes to GitHub (objc_bridge.m, updated skills)
