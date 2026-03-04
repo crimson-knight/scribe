@@ -1,0 +1,61 @@
+name: Scribe
+options:
+  bundleIdPrefix: com.crimsonknight
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+
+settings:
+  base:
+    SWIFT_OBJC_BRIDGING_HEADER: "$(PROJECT_DIR)/crystal_bridge.h"
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: "x86_64"
+    LIBRARY_SEARCH_PATHS:
+      - "$(PROJECT_DIR)"
+      - "$(PROJECT_DIR)/build"
+    OTHER_LDFLAGS:
+      - "-force_load"
+      - "$(PROJECT_DIR)/build/libscribe.a"
+      - "-force_load"
+      - "$(PROJECT_DIR)/build/libgc.a"
+      - "-lz"
+      - "-liconv"
+      - "-lc++"
+      - "-framework"
+      - "AudioToolbox"
+      - "-framework"
+      - "CoreFoundation"
+      - "-framework"
+      - "AVFoundation"
+
+targets:
+  Scribe:
+    type: application
+    platform: iOS
+    sources:
+      - path: Scribe
+        type: group
+    settings:
+      base:
+        INFOPLIST_FILE: "$(PROJECT_DIR)/Info.plist"
+        PRODUCT_BUNDLE_IDENTIFIER: com.crimsonknight.Scribe
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies: []
+
+  ScribeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ScribeUITests
+        type: group
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        INFOPLIST_FILE: "$(PROJECT_DIR)/ScribeUITests/Info.plist"
+        PRODUCT_BUNDLE_IDENTIFIER: com.crimsonknight.Scribe.UITests
+        TARGETED_DEVICE_FAMILY: "1,2"
+        TEST_HOST: ""
+        TEST_TARGET_NAME: Scribe
+    dependencies:
+      - target: Scribe
