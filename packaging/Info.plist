@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Scribe</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Scribe</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>com.scribeapp.scribe</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+
+    <key>CFBundleExecutable</key>
+    <string>scribe</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleSignature</key>
+    <string>SCRB</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+
+    <!-- Menu bar agent app — no Dock icon -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Privacy usage descriptions -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Scribe needs microphone access to capture your voice for dictation.</string>
+
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Scribe needs accessibility access to paste transcribed text into other applications.</string>
+
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+    </array>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+</dict>
+</plist>

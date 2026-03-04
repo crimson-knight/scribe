@@ -1,9 +1,26 @@
-require "./config/*"
-require "./src/scribe/*"
+require "amber"
+require "asset_pipeline/ui"
+require "crystal_audio"
+require "../config/application"
 
-Amber::Server.configure do |settings|
-  settings.name = "scribe"
-  settings.secret_key_base = ENV["SECRET_KEY_BASE"]? || "35ad7502d40bed624a7695c52b1d3b94bebfb3f4fedee0c3f77e0e43dd1b6793bafe51d95b97ccc43a8731814f7127adc61076284299d562866235661eec3d36"
-end
+# Application source
+require "./process_managers/**"
+require "./ui/**"
+require "./controllers/**"
 
-Amber::Server.start
+# Platform-specific entry point
+{% if flag?(:macos) %}
+  require "./platform/macos/**"
+{% end %}
+
+# Launch the native app
+{% if flag?(:macos) %}
+  Scribe::Platform::MacOS::App.run
+{% elsif flag?(:ios) %}
+  # iOS: crystal_init() called from Swift host — no Crystal-side main loop
+{% elsif flag?(:android) %}
+  # Android: JNI entry point — no Crystal-side main loop
+{% else %}
+  puts "Scribe requires a platform flag: -Dmacos, -Dios, or -Dandroid"
+  exit 1
+{% end %}

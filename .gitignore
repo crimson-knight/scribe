@@ -1,0 +1,30 @@
+# Dependencies
+lib/
+
+# Build output
+bin/
+dist/
+*.o
+*.a
+*.so
+*.dylib
+
+# Crystal
+.crystal/
+.shards/
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# IDE / Editor
+.claude/
+.vscode/
+.idea/
+
+# Temporary
+/tmp/
+*.log
+
+# Shard override (local dev only)
+shard.override.yml
