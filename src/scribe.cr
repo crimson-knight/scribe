@@ -1,9 +1,16 @@
 require "amber"
 require "asset_pipeline/ui"
 require "crystal_audio"
-require "../config/application"
+require "../config/*"
+
+# Compiler compatibility patches
+require "./patches/**"
 
 # Application source
+require "./models/**"
+require "./events/**"
+require "./adapters/**"
+require "./services/**"
 require "./process_managers/**"
 require "./ui/**"
 require "./controllers/**"

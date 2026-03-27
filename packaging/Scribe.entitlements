@@ -6,5 +6,9 @@
     <!-- Hardened runtime exception: microphone access -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
+
+    <!-- Hardened runtime exception: PCRE2 regex JIT requires executable memory -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
 </dict>
 </plist>

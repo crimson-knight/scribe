@@ -47,6 +47,9 @@
     <key>NSAccessibilityUsageDescription</key>
     <string>Scribe needs accessibility access to paste transcribed text into other applications.</string>
 
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Scribe needs screen recording access to capture system audio during meeting mode.</string>
+
     <key>LSArchitecturePriority</key>
     <array>
         <string>arm64</string>

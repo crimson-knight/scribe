@@ -1,0 +1,24 @@
+name: ScribeMacUITests
+options:
+  bundleIdPrefix: com.scribeapp
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "26.3"
+
+targets:
+  ScribeUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - ScribeUITests
+    settings:
+      TEST_TARGET_NAME: ""
+      TEST_HOST: ""
+      BUNDLE_LOADER: ""
+      PRODUCT_BUNDLE_IDENTIFIER: com.scribeapp.scribe-uitests
+      INFOPLIST_FILE: ScribeUITests/Info.plist
+    scheme:
+      testTargets:
+        - ScribeUITests
+      environmentVariables:
+        SCRIBE_APP_PATH: /Applications/Scribe.app

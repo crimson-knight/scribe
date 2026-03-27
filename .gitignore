@@ -41,3 +41,9 @@ mobile/android/.idea/
 mobile/ios/build/
 mobile/ios/Scribe.xcodeproj/
 mobile/ios/DerivedData/
+
+# Release artifacts (distributed via GitHub Releases)
+releases/*.dmg
+releases/**/*.dmg
+.mcp.json
+dist/

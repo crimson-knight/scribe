@@ -28,7 +28,10 @@ MACOS_FRAMEWORKS := -framework AppKit -framework Foundation -framework Carbon \
 	-framework AVFoundation -framework AudioToolbox -framework CoreAudio \
 	-framework CoreFoundation -framework CoreMedia \
 	-framework ScreenCaptureKit -framework ApplicationServices \
+	-framework UserNotifications \
 	-framework Metal -framework MetalKit -framework Accelerate \
+	-framework ServiceManagement \
+	-framework UniformTypeIdentifiers \
 	-lobjc -lc++
 
 # Full link flags for macOS
@@ -42,9 +45,9 @@ DMG_NAME := $(APP_NAME)-Installer.dmg
 VERSION := 1.0.0
 BUILD_NUMBER := 1
 
-# Signing identities (update these with your actual identity)
-DEVID_APP ?= "Developer ID Application: IDENTITY_HERE"
-DEVID_INST ?= "Developer ID Installer: IDENTITY_HERE"
+# Signing identities
+DEVID_APP ?= "Developer ID Application: AgentC Consulting LLC (PXDF92M2T4)"
+DEVID_INST ?= "Developer ID Installer: AgentC Consulting LLC (PXDF92M2T4)"
 NOTARY_PROFILE ?= scribe-notarytool
 
 .PHONY: all setup macos macos-release ext ext-scribe ext-ap ext-audio run clean clean-all \
@@ -93,8 +96,10 @@ ext-ap:
 # Scribe platform bridge
 ext-scribe: $(SCRIBE_BRIDGE)
 
+WHISPER_INCLUDE_DIR := /opt/homebrew/Cellar/whisper-cpp/1.8.3/libexec/include
+
 $(SCRIBE_BRIDGE): $(SCRIBE_BRIDGE_SRC)
-	clang -c $< -o $@ -fno-objc-arc
+	clang -c $< -o $@ -fno-objc-arc -I$(WHISPER_INCLUDE_DIR)
 
 # crystal-audio extensions
 ext-audio:
@@ -179,8 +184,9 @@ bundle: macos-release
 	install_name_tool -id @rpath/libcrypto.3.dylib "$(FW)/libcrypto.3.dylib"
 	install_name_tool -id @rpath/libpcre2-8.0.dylib "$(FW)/libpcre2-8.0.dylib"
 	install_name_tool -id @rpath/libgc.1.dylib "$(FW)/libgc.1.dylib"
-	@# libssl references libcrypto
+	@# libssl references libcrypto (use both opt symlink and Cellar real path)
 	install_name_tool -change /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib @rpath/libcrypto.3.dylib "$(FW)/libssl.3.dylib"
+	install_name_tool -change $(shell readlink -f /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib) @rpath/libcrypto.3.dylib "$(FW)/libssl.3.dylib"
 	@echo "==> Fixing binary to use @rpath for all bundled libs..."
 	@# --- Rewrite binary's absolute homebrew paths to @rpath ---
 	install_name_tool \

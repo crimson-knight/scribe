@@ -8,6 +8,18 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
+            InboxListView()
+                .tabItem {
+                    Label("Inbox", systemImage: "tray.fill")
+                }
+                .accessibilityIdentifier("nav-tab-inbox")
+
+            DictationView()
+                .tabItem {
+                    Label("Dictate", systemImage: "text.bubble")
+                }
+                .accessibilityIdentifier("nav-tab-dictate")
+
             RecordTab(model: model)
                 .tabItem {
                     Label("Record", systemImage: "mic.fill")
@@ -232,6 +244,15 @@ final class AudioRecorderModel: ObservableObject {
         if result == 0 {
             statusText = "Saved: \(URL(fileURLWithPath: currentOutputPath).lastPathComponent)"
             savedRecordings.insert(currentOutputPath, at: 0)
+
+            // Copy to selected save location
+            let localURL = URL(fileURLWithPath: currentOutputPath)
+            let location = UserDefaults.standard.string(forKey: "saveLocation") ?? "localOnly"
+            if location == SaveLocation.iCloud.rawValue {
+                SettingsView.copyToICloudIfNeeded(localURL: localURL)
+            } else if location == SaveLocation.customFolder.rawValue {
+                SettingsView.copyToCustomFolderIfNeeded(localURL: localURL)
+            }
         } else {
             statusText = "Stop failed (error \(result))"
         }

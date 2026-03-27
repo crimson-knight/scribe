@@ -23,7 +23,9 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Scribe needs microphone access to record voice memos.</string>
+	<string>Scribe needs microphone access to record voice memos and dictate threads.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Scribe uses speech recognition to transcribe your voice into text for creating new threads.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

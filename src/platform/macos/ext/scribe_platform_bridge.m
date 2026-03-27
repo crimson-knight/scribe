@@ -12,6 +12,10 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <CoreServices/CoreServices.h>
+#import <UserNotifications/UserNotifications.h>
+#import <ServiceManagement/ServiceManagement.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <whisper.h>
 
 // ============================================================================
@@ -31,11 +35,34 @@ void scribe_set_activation_policy_accessory(void *app) {
 }
 
 void scribe_activate_app(void *app) {
-    [(NSApplication *)app activate];
+    NSApplication *nsApp = (NSApplication *)app;
+    // On macOS 14+, activate is the correct API. But for menu bar apps that
+    // start as accessory, we need to also bring windows to front explicitly.
+    [nsApp activate];
+    // Force the app to the front by making it the active app
+    [[NSRunningApplication currentApplication]
+        activateWithOptions:NSApplicationActivateAllWindows |
+                           NSApplicationActivateIgnoringOtherApps];
 }
 
 void scribe_run_app(void *app) {
     [(NSApplication *)app run];
+}
+
+// Bring a window to front after the run loop has started.
+// Uses dispatch_async on the main queue so it fires on the NEXT run loop
+// iteration — guaranteed to be after NSApp.run() has begun processing events.
+void scribe_bring_window_to_front_async(void *window) {
+    NSWindow *win = (NSWindow *)window;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSApplication *app = [NSApplication sharedApplication];
+        [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+        [win makeKeyAndOrderFront:nil];
+        [app activate];
+        [[NSRunningApplication currentApplication]
+            activateWithOptions:NSApplicationActivateAllWindows |
+                               NSApplicationActivateIgnoringOtherApps];
+    });
 }
 
 void scribe_terminate_app(void *app) {
@@ -60,6 +87,12 @@ void scribe_set_window_title(void *window, const char *title) {
     [(NSWindow *)window setTitle:[NSString stringWithUTF8String:title]];
 }
 
+// Set window level. Use NSFloatingWindowLevel (3) for above-normal,
+// NSNormalWindowLevel (0) for standard, NSStatusWindowLevel (25) for always-on-top.
+void scribe_set_window_level(void *window, int level) {
+    [(NSWindow *)window setLevel:(NSWindowLevel)level];
+}
+
 void scribe_set_content_view(void *window, void *view) {
     [(NSWindow *)window setContentView:(NSView *)view];
 }
@@ -69,7 +102,12 @@ void scribe_center_window(void *window) {
 }
 
 void scribe_make_key_and_order_front(void *window) {
-    [(NSWindow *)window makeKeyAndOrderFront:nil];
+    NSWindow *win = (NSWindow *)window;
+    [win makeKeyAndOrderFront:nil];
+    // Set focus to the content view so VoiceOver and Tab navigation start there
+    if ([win contentView]) {
+        [win makeFirstResponder:[win contentView]];
+    }
 }
 
 void scribe_close_window(void *window) {
@@ -127,6 +165,9 @@ void *scribe_create_recording_indicator(void) {
     [g_indicator_label setTextColor:[NSColor whiteColor]];
     [g_indicator_label setFont:[NSFont systemFontOfSize:15 weight:NSFontWeightMedium]];
     [g_indicator_label setAlignment:NSTextAlignmentCenter];
+    // Accessibility: announce recording status to VoiceOver
+    [g_indicator_label setAccessibilityRole:NSAccessibilityStaticTextRole];
+    [g_indicator_label setAccessibilityLabel:@"Recording Status"];
     [content addSubview:g_indicator_label];
 
     // Position at top-center of main screen
@@ -149,7 +190,19 @@ void scribe_hide_recording_indicator(void *window) {
 
 void scribe_update_recording_indicator_text(void *window, const char *text) {
     if (g_indicator_label) {
-        [g_indicator_label setStringValue:[NSString stringWithUTF8String:text]];
+        NSString *nsText = [NSString stringWithUTF8String:text];
+        [g_indicator_label setStringValue:nsText];
+        // Announce status change to VoiceOver
+        NSAccessibilityPostNotification(g_indicator_label,
+            NSAccessibilityValueChangedNotification);
+        // Also post an announcement for screen readers
+        NSDictionary *info = @{
+            NSAccessibilityAnnouncementKey: nsText,
+            NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)
+        };
+        NSAccessibilityPostNotification(
+            [NSApplication sharedApplication],
+            NSAccessibilityAnnouncementRequestedNotification);
     }
 }
 
@@ -604,4 +657,692 @@ struct whisper_context *scribe_whisper_init(const char *model_path) {
 
 void scribe_whisper_free(struct whisper_context *ctx) {
     if (ctx) whisper_free(ctx);
+}
+
+// ============================================================================
+// Section 12: HTTP File Download (NSURLSession with progress)
+// ============================================================================
+//
+// Downloads a file from a URL to a local path, reporting progress and
+// completion via C function pointer callbacks. Uses NSURLSession's
+// downloadTaskWithURL: with a delegate for progress reporting.
+//
+// Progress callback fires on main thread with (bytesWritten, totalBytes).
+// Completion callback fires on main thread with (success, error_message).
+
+typedef void (*download_progress_fn)(int64_t bytes_written, int64_t total_bytes);
+typedef void (*download_completion_fn)(int32_t success, const char *error_message);
+
+@interface ScribeDownloadDelegate : NSObject <NSURLSessionDownloadDelegate>
+@property (nonatomic, copy) NSString *destinationPath;
+@property (nonatomic, assign) download_progress_fn progressCallback;
+@property (nonatomic, assign) download_completion_fn completionCallback;
+@end
+
+@implementation ScribeDownloadDelegate
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+didFinishDownloadingToURL:(NSURL *)location {
+    NSError *error = nil;
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    // Remove existing file if present (re-download case)
+    if ([fm fileExistsAtPath:self.destinationPath]) {
+        [fm removeItemAtPath:self.destinationPath error:nil];
+    }
+
+    // Move downloaded temp file to destination
+    BOOL moved = [fm moveItemAtURL:location
+                             toURL:[NSURL fileURLWithPath:self.destinationPath]
+                             error:&error];
+
+    if (moved) {
+        NSLog(@"[Scribe:download] File saved to %@", self.destinationPath);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.completionCallback) {
+                self.completionCallback(1, NULL);
+            }
+        });
+    } else {
+        NSString *errMsg = [NSString stringWithFormat:@"Failed to move file: %@",
+                           error.localizedDescription];
+        NSLog(@"[Scribe:download] %@", errMsg);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.completionCallback) {
+                self.completionCallback(0, [errMsg UTF8String]);
+            }
+        });
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+      didWriteData:(int64_t)bytesWritten
+ totalBytesWritten:(int64_t)totalBytesWritten
+totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.progressCallback) {
+            self.progressCallback(totalBytesWritten, totalBytesExpectedToWrite);
+        }
+    });
+}
+
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+didCompleteWithError:(NSError *)error {
+    if (error) {
+        NSString *errMsg = [NSString stringWithFormat:@"Download failed: %@",
+                           error.localizedDescription];
+        NSLog(@"[Scribe:download] %@", errMsg);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.completionCallback) {
+                self.completionCallback(0, [errMsg UTF8String]);
+            }
+        });
+    }
+}
+
+@end
+
+// Strong reference to keep delegate alive during download
+static ScribeDownloadDelegate *g_download_delegate = nil;
+
+void scribe_download_file(const char *url_str,
+                           const char *dest_path,
+                           download_progress_fn progress_callback,
+                           download_completion_fn completion_callback) {
+    if (!url_str || !dest_path) {
+        if (completion_callback) completion_callback(0, "NULL url or destination");
+        return;
+    }
+
+    NSString *urlString = [NSString stringWithUTF8String:url_str];
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        if (completion_callback) completion_callback(0, "Invalid URL");
+        return;
+    }
+
+    NSLog(@"[Scribe:download] Starting download: %@ -> %s", urlString, dest_path);
+
+    // Ensure destination directory exists
+    NSString *destDir = [[NSString stringWithUTF8String:dest_path] stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:destDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+
+    g_download_delegate = [[ScribeDownloadDelegate alloc] init];
+    g_download_delegate.destinationPath = [NSString stringWithUTF8String:dest_path];
+    g_download_delegate.progressCallback = progress_callback;
+    g_download_delegate.completionCallback = completion_callback;
+
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+    config.timeoutIntervalForRequest = 30.0;
+    config.timeoutIntervalForResource = 600.0; // 10 min for large models
+
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config
+                                                          delegate:g_download_delegate
+                                                     delegateQueue:nil];
+
+    NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url];
+    [task resume];
+}
+
+// ============================================================================
+// Section 13: macOS Notifications (UNUserNotificationCenter)
+// ============================================================================
+//
+// Delivers macOS system notifications via UNUserNotificationCenter.
+// Permission is requested lazily on first notification attempt.
+// Notifications include title, body, and an identifier (thread UUID)
+// that can be used for future deep-link handling.
+
+static BOOL g_notifications_authorized = NO;
+static BOOL g_notifications_auth_requested = NO;
+
+void scribe_notifications_request_auth(void) {
+    if (g_notifications_auth_requested) return;
+    g_notifications_auth_requested = YES;
+
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                             UNAuthorizationOptionSound |
+                                             UNAuthorizationOptionBadge)
+                         completionHandler:^(BOOL granted, NSError * _Nullable error) {
+        g_notifications_authorized = granted;
+        if (granted) {
+            NSLog(@"[Scribe:notifications] Authorization granted");
+        } else {
+            NSLog(@"[Scribe:notifications] Authorization denied: %@",
+                  error ? error.localizedDescription : @"user denied");
+        }
+    }];
+}
+
+void scribe_notification_send(const char *title, const char *body, const char *identifier) {
+    if (!title || !body || !identifier) {
+        NSLog(@"[Scribe:notifications] ERROR: null title, body, or identifier");
+        return;
+    }
+
+    // Request auth on first send if not already done
+    if (!g_notifications_auth_requested) {
+        scribe_notifications_request_auth();
+    }
+
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = [NSString stringWithUTF8String:title];
+    content.body = [NSString stringWithUTF8String:body];
+    content.sound = [UNNotificationSound defaultSound];
+
+    NSString *reqId = [NSString stringWithUTF8String:identifier];
+
+    // Immediate delivery (nil trigger = deliver now)
+    UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:reqId
+                                                                          content:content
+                                                                          trigger:nil];
+
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center addNotificationRequest:request withCompletionHandler:^(NSError * _Nullable error) {
+        if (error) {
+            NSLog(@"[Scribe:notifications] Failed to deliver: %@", error.localizedDescription);
+        } else {
+            NSLog(@"[Scribe:notifications] Delivered: %s", identifier);
+        }
+    }];
+}
+
+// ============================================================================
+// Section 14: FSEvents File Watching (iCloud Sync -- Epic 12)
+// ============================================================================
+//
+// Monitors a directory tree for file-level changes using macOS FSEvents API.
+// Used to detect iCloud Drive synced file changes (new/modified/deleted thread
+// files from other devices). The callback fires on the main thread with the
+// changed file path and FSEvent flags.
+//
+// Flags of interest:
+//   kFSEventStreamEventFlagItemCreated   = 0x00000100
+//   kFSEventStreamEventFlagItemRemoved   = 0x00000200
+//   kFSEventStreamEventFlagItemModified  = 0x00001000
+//   kFSEventStreamEventFlagItemRenamed   = 0x00000800
+
+typedef void (*fsevents_callback_fn)(const char *path, uint32_t flags);
+static fsevents_callback_fn g_fsevents_callback = NULL;
+
+static void fsevents_handler(ConstFSEventStreamRef streamRef,
+                              void *clientCallBackInfo,
+                              size_t numEvents,
+                              void *eventPaths,
+                              const FSEventStreamEventFlags eventFlags[],
+                              const FSEventStreamEventId eventIds[]) {
+    char **paths = (char **)eventPaths;
+    for (size_t i = 0; i < numEvents; i++) {
+        uint32_t flags = (uint32_t)eventFlags[i];
+        // Only fire for file-level events (not directory-level)
+        if (flags & (kFSEventStreamEventFlagItemCreated |
+                     kFSEventStreamEventFlagItemRemoved |
+                     kFSEventStreamEventFlagItemModified |
+                     kFSEventStreamEventFlagItemRenamed)) {
+            const char *path = paths[i];
+            // Dispatch callback on main thread for thread safety with Crystal
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (g_fsevents_callback) {
+                    g_fsevents_callback(path, flags);
+                }
+            });
+        }
+    }
+}
+
+// Start watching a directory path for file-level changes.
+// Returns an opaque FSEventStreamRef (pass to scribe_fsevents_stop to stop).
+// The callback fires on the main thread.
+void *scribe_fsevents_start(const char *path, fsevents_callback_fn callback) {
+    if (!path || !callback) {
+        NSLog(@"[Scribe:fsevents] ERROR: null path or callback");
+        return NULL;
+    }
+
+    g_fsevents_callback = callback;
+
+    NSString *watchPath = [NSString stringWithUTF8String:path];
+    NSArray *pathsToWatch = @[watchPath];
+
+    FSEventStreamContext context = {0, NULL, NULL, NULL, NULL};
+
+    FSEventStreamRef stream = FSEventStreamCreate(
+        kCFAllocatorDefault,
+        &fsevents_handler,
+        &context,
+        (__bridge CFArrayRef)pathsToWatch,
+        kFSEventStreamEventIdSinceNow,
+        1.0,  // 1 second latency (batches events for efficiency)
+        kFSEventStreamCreateFlagFileEvents |
+        kFSEventStreamCreateFlagUseCFTypes |
+        kFSEventStreamCreateFlagNoDefer
+    );
+
+    if (!stream) {
+        NSLog(@"[Scribe:fsevents] ERROR: Failed to create FSEventStream");
+        return NULL;
+    }
+
+    // Schedule on the main dispatch queue (modern API, replaces deprecated RunLoop scheduling)
+    FSEventStreamSetDispatchQueue(stream, dispatch_get_main_queue());
+    FSEventStreamStart(stream);
+
+    NSLog(@"[Scribe:fsevents] Watching: %@", watchPath);
+    return (void *)stream;
+}
+
+// Stop watching for file changes and release the stream.
+void scribe_fsevents_stop(void *stream) {
+    if (!stream) return;
+
+    FSEventStreamRef fsStream = (FSEventStreamRef)stream;
+    FSEventStreamStop(fsStream);
+    FSEventStreamInvalidate(fsStream);
+    FSEventStreamRelease(fsStream);
+
+    NSLog(@"[Scribe:fsevents] Stopped watching");
+}
+
+// ============================================================================
+// Section 15: Launch at Login (SMAppService — macOS 13.0+)
+// ============================================================================
+
+// Check if the app is registered to launch at login.
+// Returns 1 if enabled, 0 otherwise.
+int scribe_launch_at_login_status(void) {
+    @try {
+        if (@available(macOS 13.0, *)) {
+            SMAppService *service = [SMAppService mainAppService];
+            return (service.status == SMAppServiceStatusEnabled) ? 1 : 0;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[Scribe:login] Exception checking status: %@", exception.reason);
+    }
+    return 0;
+}
+
+// Register the app to launch at login.
+// Returns 1 on success, 0 on failure.
+int scribe_launch_at_login_enable(void) {
+    @try {
+        if (@available(macOS 13.0, *)) {
+            NSError *error = nil;
+            BOOL ok = [[SMAppService mainAppService] registerAndReturnError:&error];
+            if (!ok) {
+                NSLog(@"[Scribe:login] Failed to enable: %@",
+                      error.localizedDescription);
+            }
+            return ok ? 1 : 0;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[Scribe:login] Exception enabling: %@", exception.reason);
+    }
+    return 0;
+}
+
+// Unregister the app from launching at login.
+// Returns 1 on success, 0 on failure.
+int scribe_launch_at_login_disable(void) {
+    @try {
+        if (@available(macOS 13.0, *)) {
+            NSError *error = nil;
+            BOOL ok = [[SMAppService mainAppService] unregisterAndReturnError:&error];
+            if (!ok) {
+                NSLog(@"[Scribe:login] Failed to disable: %@",
+                      error.localizedDescription);
+            }
+            return ok ? 1 : 0;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[Scribe:login] Exception disabling: %@", exception.reason);
+    }
+    return 0;
+}
+
+// ============================================================================
+// Section 15b: Submenu & Menu Item Management
+// ============================================================================
+
+// Attach a submenu to a menu item.
+void scribe_set_menu_item_submenu(void *item, void *submenu) {
+    [(NSMenuItem *)item setSubmenu:(NSMenu *)submenu];
+}
+
+// Remove all items from a menu (for rebuilding submenus dynamically).
+void scribe_remove_all_menu_items(void *menu) {
+    [(NSMenu *)menu removeAllItems];
+}
+
+// Enable or disable a menu item.
+void scribe_set_menu_item_enabled(void *item, int enabled) {
+    [(NSMenuItem *)item setEnabled:(enabled != 0)];
+}
+
+// ============================================================================
+// Section 16: NSOpenPanel (Folder Picker)
+// ============================================================================
+
+// Show a modal folder picker dialog.
+// Returns a malloc'd C string with the selected path, or NULL if cancelled.
+// Caller must free the returned string with scribe_free_string().
+const char *scribe_choose_folder(const char *title) {
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:NO];
+        [panel setCanChooseDirectories:YES];
+        [panel setAllowsMultipleSelection:NO];
+        [panel setCanCreateDirectories:YES];
+        if (title) {
+            [panel setTitle:[NSString stringWithUTF8String:title]];
+            [panel setMessage:[NSString stringWithUTF8String:title]];
+        }
+
+        NSModalResponse response = [panel runModal];
+        if (response == NSModalResponseOK) {
+            NSURL *url = [[panel URLs] firstObject];
+            if (url) {
+                return strdup([[url path] UTF8String]);
+            }
+        }
+        return NULL;
+    }
+}
+
+// Show a modal file picker dialog filtered to audio files.
+// Returns a malloc'd C string with the selected path, or NULL if cancelled.
+const char *scribe_choose_file(const char *title) {
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:NO];
+        [panel setAllowsMultipleSelection:NO];
+        if (title) {
+            [panel setTitle:[NSString stringWithUTF8String:title]];
+        }
+        // Filter to supported audio file types (WAV native, others converted via afconvert)
+        if (@available(macOS 11.0, *)) {
+            UTType *wav = [UTType typeWithFilenameExtension:@"wav"];
+            UTType *m4a = [UTType typeWithFilenameExtension:@"m4a"];
+            UTType *mp3 = [UTType typeWithFilenameExtension:@"mp3"];
+            UTType *aiff = [UTType typeWithFilenameExtension:@"aiff"];
+            UTType *caf = [UTType typeWithFilenameExtension:@"caf"];
+            UTType *flac = [UTType typeWithFilenameExtension:@"flac"];
+            NSMutableArray *types = [NSMutableArray array];
+            if (wav)  [types addObject:wav];
+            if (m4a)  [types addObject:m4a];
+            if (mp3)  [types addObject:mp3];
+            if (aiff) [types addObject:aiff];
+            if (caf)  [types addObject:caf];
+            if (flac) [types addObject:flac];
+            [panel setAllowedContentTypes:types];
+        }
+
+        NSModalResponse response = [panel runModal];
+        if (response == NSModalResponseOK) {
+            NSURL *url = [[panel URLs] firstObject];
+            if (url) {
+                return strdup([[url path] UTF8String]);
+            }
+        }
+        return NULL;
+    }
+}
+
+// Free a string returned by scribe_choose_folder() or scribe_choose_file().
+void scribe_free_string(char *str) {
+    if (str) free(str);
+}
+
+// ============================================================================
+// Section 17: System Colors (semantic macOS colors for adaptive Light/Dark mode)
+// ============================================================================
+
+// Helper: extract RGBA from an NSColor, resolving catalog/dynamic colors.
+// NSColor.labelColor etc. are "catalog colors" that can't directly convert
+// to sRGB. We must first convert to component-based, then to sRGB.
+static void _extract_rgba(NSColor *color, double *r, double *g, double *b, double *a) {
+    NSColor *resolved = nil;
+
+    // Step 1: Convert catalog color to component-based (macOS 11+)
+    if (@available(macOS 11.0, *)) {
+        resolved = [color colorUsingType:NSColorTypeComponentBased];
+    }
+
+    // Step 2: Convert to sRGB for consistent RGBA extraction
+    NSColor *srgb = nil;
+    if (resolved) {
+        srgb = [resolved colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    }
+    if (!srgb) {
+        srgb = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    }
+
+    if (srgb) {
+        *r = [srgb redComponent];
+        *g = [srgb greenComponent];
+        *b = [srgb blueComponent];
+        *a = [srgb alphaComponent];
+        return;
+    }
+
+    // Ultimate fallback: detect dark mode and use appropriate default
+    BOOL isDark = NO;
+    NSAppearance *appearance = [[NSApplication sharedApplication] effectiveAppearance];
+    if (appearance) {
+        isDark = [appearance.name isEqualToString:NSAppearanceNameDarkAqua] ||
+                 [appearance.name containsString:@"Dark"];
+    }
+    *r = isDark ? 1.0 : 0.0;
+    *g = isDark ? 1.0 : 0.0;
+    *b = isDark ? 1.0 : 0.0;
+    *a = 1.0;
+}
+
+void scribe_get_label_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor labelColor], r, g, b, a);
+}
+
+void scribe_get_secondary_label_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor secondaryLabelColor], r, g, b, a);
+}
+
+void scribe_get_tertiary_label_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor tertiaryLabelColor], r, g, b, a);
+}
+
+void scribe_get_control_accent_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor controlAccentColor], r, g, b, a);
+}
+
+void scribe_get_window_background_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor windowBackgroundColor], r, g, b, a);
+}
+
+void scribe_get_system_green_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor systemGreenColor], r, g, b, a);
+}
+
+void scribe_get_system_red_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor systemRedColor], r, g, b, a);
+}
+
+void scribe_get_system_yellow_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor systemYellowColor], r, g, b, a);
+}
+
+void scribe_get_separator_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor separatorColor], r, g, b, a);
+}
+
+void scribe_get_link_color(double *r, double *g, double *b, double *a) {
+    _extract_rgba([NSColor linkColor], r, g, b, a);
+}
+
+// Open a URL in the default browser.
+void scribe_open_url(const char *url_cstr) {
+    if (!url_cstr) return;
+    @autoreleasepool {
+        NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:url_cstr]];
+        if (url) [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+}
+
+// Post a VoiceOver announcement (for state changes like recording start/stop).
+void scribe_accessibility_announce(const char *text) {
+    if (!text) return;
+    NSString *announcement = [NSString stringWithUTF8String:text];
+    NSDictionary *info = @{
+        NSAccessibilityAnnouncementKey: announcement,
+        NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)
+    };
+    NSAccessibilityPostNotificationWithUserInfo(
+        [NSApplication sharedApplication],
+        NSAccessibilityAnnouncementRequestedNotification,
+        info
+    );
+}
+
+// ============================================================================
+// Section 17b: Screen Recording Permission Check
+// ============================================================================
+
+// Check if Screen Recording (system audio) permission is granted.
+// Returns 1 if granted, 0 if not.
+int scribe_screen_capture_check(void) {
+    if (@available(macOS 10.15, *)) {
+        return CGPreflightScreenCaptureAccess() ? 1 : 0;
+    }
+    return 1; // Pre-Catalina always allowed
+}
+
+// Request Screen Recording permission. Opens the system prompt.
+// Returns 1 if granted immediately, 0 if user needs to grant in System Settings.
+int scribe_screen_capture_request(void) {
+    if (@available(macOS 10.15, *)) {
+        return CGRequestScreenCaptureAccess() ? 1 : 0;
+    }
+    return 1;
+}
+
+// ============================================================================
+// Section 18: Open System Settings (for permission request flows)
+// ============================================================================
+
+void scribe_open_system_settings(const char *url_string) {
+    @autoreleasepool {
+        NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:url_string]];
+        [[NSWorkspace sharedWorkspace] openURL:url];
+    }
+}
+
+// ============================================================================
+// Section 19: CrystalActionDispatcher (Asset Pipeline button callback bridge)
+// ============================================================================
+//
+// The Asset Pipeline AppKit renderer expects a "CrystalActionDispatcher" ObjC
+// class with a dispatch: method that routes button clicks back to Crystal's
+// CallbackRegistry via crystal_ui_callback_dispatch(). This class is NOT
+// provided by the Asset Pipeline's objc_bridge — we register it dynamically here.
+
+// Extern: Crystal-side callback dispatch function. Defined via `fun` export in Crystal.
+extern void crystal_ui_callback_dispatch(uint64_t callback_id);
+
+// ============================================================================
+// Section 19b: App Restart
+// ============================================================================
+
+void scribe_restart_app(void) {
+    NSURL *bundleURL = [[NSBundle mainBundle] bundleURL];
+    NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
+    config.createsNewApplicationInstance = YES;
+    [[NSWorkspace sharedWorkspace] openApplicationAtURL:bundleURL
+                                         configuration:config
+                                     completionHandler:^(NSRunningApplication *app, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSApp terminate:nil];
+        });
+    }];
+}
+
+// CrystalActionDispatcher — a simple NSObject subclass that stores a tag and
+// dispatches button clicks to Crystal's CallbackRegistry.
+@interface CrystalActionDispatcher : NSObject
+@property (nonatomic, assign) NSInteger tag;
+- (void)dispatch:(id)sender;
+@end
+
+@implementation CrystalActionDispatcher
+- (void)dispatch:(id)sender {
+    if (self.tag > 0) {
+        crystal_ui_callback_dispatch((uint64_t)self.tag);
+    }
+}
+@end
+
+// ============================================================================
+// Section 19d: CrystalTextFieldDelegate (TextField on_change callback bridge)
+// ============================================================================
+//
+// The Asset Pipeline renderer registers on_change callbacks for TextFields
+// but never sets a delegate. This observer listens for ALL NSTextField changes
+// via NSNotificationCenter and routes them through crystal_ui_callback_dispatch.
+//
+// The callback ID is stored on the NativeView via CallbackRegistry.
+// The renderer stores the callback ID as part of the NativeView's callback_ids.
+// Since we can't access that from ObjC, we use the NSTextField's tag property
+// to store the callback ID (set by the renderer at visit time).
+
+@interface CrystalTextFieldObserver : NSObject
+@end
+
+@implementation CrystalTextFieldObserver
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self
+               selector:@selector(textDidChange:)
+                   name:NSControlTextDidChangeNotification
+                 object:nil];
+    }
+    return self;
+}
+
+- (void)textDidChange:(NSNotification *)notification {
+    NSTextField *field = notification.object;
+    if ([field isKindOfClass:[NSTextField class]] && field.tag > 0) {
+        crystal_ui_callback_dispatch((uint64_t)field.tag);
+    }
+}
+@end
+
+static CrystalTextFieldObserver *g_text_observer = nil;
+
+__attribute__((constructor))
+static void _register_text_field_observer(void) {
+    g_text_observer = [[CrystalTextFieldObserver alloc] init];
+}
+
+// ============================================================================
+// Section 20: NSStackView edge insets (padding support for Asset Pipeline)
+// ============================================================================
+
+void scribe_stackview_set_edge_insets(void *stackview,
+                                       double top, double left,
+                                       double bottom, double right) {
+    if (!stackview) return;
+    id obj = (id)stackview;
+    if ([obj isKindOfClass:[NSStackView class]]) {
+        NSStackView *sv = (NSStackView *)stackview;
+        sv.edgeInsets = NSEdgeInsetsMake(top, left, bottom, right);
+    } else {
+        NSLog(@"[Scribe:padding] Warning: view is %@, not NSStackView", [obj class]);
+    }
 }

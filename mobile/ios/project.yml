@@ -26,6 +26,8 @@ settings:
       - "CoreFoundation"
       - "-framework"
       - "AVFoundation"
+      - "-framework"
+      - "Speech"
 
 targets:
   Scribe:
