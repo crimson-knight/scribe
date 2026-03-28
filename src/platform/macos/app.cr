@@ -538,7 +538,7 @@ module Scribe::Platform::MacOS
           )
           @@capture.not_nil!.perform
           IndicatorManager.update_status_recording(@@status_item, @@record_menu_item, @@recording_indicator, true)
-          puts "[Scribe] Recording started (#{mode.name})..."
+          Scribe::Services::LogService.info("Recording started (#{mode.name})")
         end
       end
     end
@@ -549,7 +549,7 @@ module Scribe::Platform::MacOS
           cap.stop
           IndicatorManager.update_status_recording(@@status_item, @@record_menu_item, @@recording_indicator, false)
           audio_path = cap.output_path
-          puts "[Scribe] Recording stopped. Saved to: #{audio_path}"
+          Scribe::Services::LogService.info("Recording stopped. Saved to: #{audio_path}")
 
           if audio_path && !@@whisper_ctx.null?
             @@last_audio_path = audio_path
@@ -578,7 +578,7 @@ module Scribe::Platform::MacOS
           end
           cap.perform
           IndicatorManager.update_status_recording(@@status_item, @@record_menu_item, @@recording_indicator, true)
-          puts "[Scribe] Recording started..."
+          Scribe::Services::LogService.info("Recording started")
         end
       end
     end
@@ -603,7 +603,7 @@ module Scribe::Platform::MacOS
         end
       rescue ex
         @@last_transcribe_error = ex.message || "Unknown transcription error"
-        STDERR.puts "[Scribe] Transcription error: #{@@last_transcribe_error}"
+        Scribe::Services::LogService.error("Transcription error: #{@@last_transcribe_error}")
       end
     end
 
@@ -822,7 +822,7 @@ module Scribe::Platform::MacOS
 
     def self.on_paste_cycle_complete(success : Int32)
       if success == 1
-        puts "[Scribe] Paste cycle complete -- auto-pasted and clipboard restored"
+        Scribe::Services::LogService.info("Paste cycle complete — auto-pasted")
         IndicatorManager.update_text(@@recording_indicator, "Done!")
       else
         puts "[Scribe] Auto-paste not available -- transcript copied to clipboard"
@@ -997,10 +997,11 @@ module Scribe::Platform::MacOS
 
     # Open the settings/preferences window
     def self.open_settings
-      puts "[Scribe] Opening settings..."
+      Scribe::Services::LogService.info("Opening settings...")
 
       # If settings window already exists, just bring it to front
       unless @@settings_window.null?
+        Scribe::Services::LogService.info("Settings window exists, bringing to front")
         LibScribePlatform.scribe_order_window_front_regardless(@@settings_window)
         return
       end
@@ -1272,7 +1273,14 @@ module Scribe::Platform::MacOS
           if show
             LibScribePlatform.scribe_set_activation_policy_regular(@@app)
           else
-            LibScribePlatform.scribe_set_activation_policy_accessory(@@app)
+            # Only go accessory if no windows are open — going accessory hides ALL windows
+            has_open_windows = !@@settings_window.null? || !@@about_window.null? || !@@wizard_window.null?
+            if has_open_windows
+              # Stay regular while windows are open — will go accessory when they close
+              Scribe::Services::LogService.info("Dock icon disabled but keeping regular policy while windows are open")
+            else
+              LibScribePlatform.scribe_set_activation_policy_accessory(@@app)
+            end
           end
           Scribe::Services::LogService.info("Dock icon: #{show ? "enabled" : "disabled"}")
         end
