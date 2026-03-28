@@ -20,6 +20,7 @@ module Scribe::Platform::MacOS
     fun scribe_set_content_view(window : Void*, view : Void*) : Void
     fun scribe_center_window(window : Void*) : Void
     fun scribe_make_key_and_order_front(window : Void*) : Void
+    fun scribe_is_window_visible(window : Void*) : Int32
     fun scribe_order_window_front_regardless(window : Void*) : Void
     fun scribe_close_window(window : Void*) : Void
     fun scribe_show_window(window : Void*) : Void
@@ -999,11 +1000,21 @@ module Scribe::Platform::MacOS
     def self.open_settings
       Scribe::Services::LogService.info("Opening settings...")
 
-      # If settings window already exists, just bring it to front
+      # If settings window reference exists, check if it's still visible
+      # (user may have closed it with the X button)
       unless @@settings_window.null?
-        Scribe::Services::LogService.info("Settings window exists, bringing to front")
-        LibScribePlatform.scribe_order_window_front_regardless(@@settings_window)
-        return
+        if LibScribePlatform.scribe_is_window_visible(@@settings_window) == 1
+          Scribe::Services::LogService.info("Settings window visible, bringing to front")
+          LibScribePlatform.scribe_order_window_front_regardless(@@settings_window)
+          return
+        else
+          # Window was closed — null out references and create fresh
+          Scribe::Services::LogService.info("Settings window was closed, creating new one")
+          @@settings_window = Pointer(Void).null
+          @@settings_view = nil
+          @@settings_renderer = nil
+          @@settings_native_view = nil
+        end
       end
 
       begin
@@ -1031,8 +1042,8 @@ module Scribe::Platform::MacOS
     # Refresh settings window content without closing/reopening the window.
     # Rebuilds the view tree and replaces the content view in-place.
     def self.reopen_settings
-      unless @@settings_window.null?
-        # Rebuild view and replace content — no window close/reopen = no flicker
+      # Check if window still exists and is visible before refreshing
+      if !@@settings_window.null? && LibScribePlatform.scribe_is_window_visible(@@settings_window) == 1
         @@settings_view = Scribe::UI::SettingsView.build
         @@settings_renderer = ::UI::AppKit::Renderer.new
         @@settings_native_view = @@settings_renderer.not_nil!.render(@@settings_view.not_nil!)
@@ -1040,6 +1051,11 @@ module Scribe::Platform::MacOS
         LibScribePlatform.scribe_stackview_set_edge_insets(settings_ptr, 20.0, 20.0, 20.0, 20.0)
         LibScribePlatform.scribe_set_content_view(@@settings_window, settings_ptr)
       else
+        # Window was closed or doesn't exist — create fresh
+        @@settings_window = Pointer(Void).null
+        @@settings_view = nil
+        @@settings_renderer = nil
+        @@settings_native_view = nil
         open_settings
       end
     end
@@ -1273,8 +1289,11 @@ module Scribe::Platform::MacOS
           if show
             LibScribePlatform.scribe_set_activation_policy_regular(@@app)
           else
-            # Only go accessory if no windows are open — going accessory hides ALL windows
-            has_open_windows = !@@settings_window.null? || !@@about_window.null? || !@@wizard_window.null?
+            # Only go accessory if no windows are VISIBLE — going accessory hides ALL windows
+            settings_visible = !@@settings_window.null? && LibScribePlatform.scribe_is_window_visible(@@settings_window) == 1
+            about_visible = !@@about_window.null? && LibScribePlatform.scribe_is_window_visible(@@about_window) == 1
+            wizard_visible = !@@wizard_window.null? && LibScribePlatform.scribe_is_window_visible(@@wizard_window) == 1
+            has_open_windows = settings_visible || about_visible || wizard_visible
             if has_open_windows
               # Stay regular while windows are open — will go accessory when they close
               Scribe::Services::LogService.info("Dock icon disabled but keeping regular policy while windows are open")

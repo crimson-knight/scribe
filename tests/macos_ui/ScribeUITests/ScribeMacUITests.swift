@@ -360,6 +360,71 @@ final class ScribeMacUITests: XCTestCase {
     // Note: testAppQuitsCleanly removed from the main suite because
     // terminating the app disrupts other tests. The quit crash was
     // verified separately (0 crash reports after 10 test launches).
-    // The fix: Quit routes through App.on_quit which frees whisper
-    // context before calling terminate.
+
+    // MARK: - Window Lifecycle Regression Tests
+
+    func testPreferencesWindowSurvivesCloseAndReopen() {
+        // Regression: closing preferences with X, then reopening crashed the app
+        // because @@settings_window was non-null but the window was deallocated.
+        // The fix: check isVisible before reusing the window reference.
+
+        // Open preferences
+        let prefs1 = openPreferences()
+        XCTAssertTrue(prefs1.exists, "First open should work")
+
+        // Close it with Cmd+W
+        app.typeKey("w", modifierFlags: .command)
+        sleep(1)
+
+        // Reopen — this was the crash point
+        let prefs2 = openPreferences()
+        XCTAssertTrue(prefs2.exists, "Reopening after close should work without crash")
+
+        saveScreenshot("14_close_reopen_prefs")
+    }
+
+    func testDockToggleOffDoesNotCrashOnReopen() {
+        // Regression: toggle dock off → close prefs → reopen prefs → crash
+        // Full reproduction sequence from user report.
+
+        // Step 1: Open preferences
+        let prefs = openPreferences()
+        guard prefs.exists else {
+            XCTFail("Could not open preferences")
+            return
+        }
+
+        // Step 2: Toggle off Show in Dock
+        let dockToggle = prefs.switches.matching(
+            NSPredicate(format: "label CONTAINS 'Show in Dock'")
+        ).firstMatch
+        if dockToggle.waitForExistence(timeout: 3) {
+            if dockToggle.value as? String == "1" {
+                dockToggle.click()
+                sleep(1)
+            }
+        }
+
+        // Step 3: Toggle it back on
+        let dockToggle2 = prefs.switches.matching(
+            NSPredicate(format: "label CONTAINS 'Show in Dock'")
+        ).firstMatch
+        if dockToggle2.waitForExistence(timeout: 3) {
+            if dockToggle2.value as? String == "0" {
+                dockToggle2.click()
+                sleep(1)
+            }
+        }
+
+        // Step 4: Close preferences with Cmd+W
+        app.typeKey("w", modifierFlags: .command)
+        sleep(1)
+
+        // Step 5: Reopen — this was the crash point
+        let prefs2 = openPreferences()
+        XCTAssertTrue(prefs2.exists,
+                      "Reopening after dock toggle + close should not crash")
+
+        saveScreenshot("15_dock_toggle_reopen")
+    }
 }

@@ -110,6 +110,13 @@ void scribe_make_key_and_order_front(void *window) {
     }
 }
 
+// Check if a window is still visible (not closed by the user).
+// Returns 1 if visible, 0 if not (closed or nil).
+int scribe_is_window_visible(void *window) {
+    if (!window) return 0;
+    return [(NSWindow *)window isVisible] ? 1 : 0;
+}
+
 // Force a window in front of ALL other windows from ALL apps,
 // even if the app is not active. This is the reliable way to show
 // windows from menu bar / accessory apps.
