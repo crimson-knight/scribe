@@ -756,9 +756,18 @@ module Scribe::Platform::MacOS
         output = IO::Memory.new
         error = IO::Memory.new
         start_time = Time.utc
+
+        # Build the full command with the transcript path shell-escaped and appended.
+        # We use shell: true because the user's command may contain pipes, flags, quotes, etc.
+        # The transcript path is appended as a properly escaped argument.
+        escaped_path = Process.quote(@@pp_transcript_path)
+        full_command = "#{@@pp_command} #{escaped_path}"
+
+        Scribe::Services::LogService.info("Post-processing command: #{full_command}")
+        Scribe::Services::LogService.info("Working directory: #{@@pp_transcript_dir}")
+
         status = Process.run(
-          @@pp_command,
-          args: [@@pp_transcript_path],
+          full_command,
           output: output,
           error: error,
           shell: true,
