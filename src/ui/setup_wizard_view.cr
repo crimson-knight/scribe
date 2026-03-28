@@ -168,6 +168,27 @@ module Scribe::UI::SetupWizardView
       root << enable_btn
     end
 
+    # Show in Dock option
+    dock_desc = ::UI::Label.new(
+      "If your menu bar is crowded, enable Show in Dock so you " \
+      "can always find Scribe."
+    )
+    dock_desc.font = ::UI::Font.new(size: 13.0, weight: :regular)
+    dock_desc.text_color = secondary
+    root << dock_desc
+
+    dock_status = Scribe::Settings::Manager.get("show_dock_icon") == "true"
+    dock_btn = ::UI::Button.new(dock_status ? "✓ Show in Dock (enabled)" : "Show in Dock") {
+      Scribe::Settings::Manager.set("show_dock_icon", "true")
+      Scribe::Platform::MacOS::LibScribePlatform.scribe_set_activation_policy_regular(
+        Scribe::Platform::MacOS::App.app_ref
+      )
+      Scribe::Platform::MacOS::App.wizard_update_step(1)
+      nil
+    }
+    dock_btn.accessibility_label = "Enable Show in Dock for easy access"
+    root << dock_btn
+
     next_btn = ::UI::Button.new("Next →") {
       puts "[Wizard] Next clicked (step 1 → 2)"
       Scribe::Platform::MacOS::App.wizard_update_step(2)

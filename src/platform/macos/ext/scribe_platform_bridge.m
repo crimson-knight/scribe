@@ -110,6 +110,25 @@ void scribe_make_key_and_order_front(void *window) {
     }
 }
 
+// Force a window in front of ALL other windows from ALL apps,
+// even if the app is not active. This is the reliable way to show
+// windows from menu bar / accessory apps.
+void scribe_order_window_front_regardless(void *window) {
+    NSWindow *win = (NSWindow *)window;
+    [win orderFrontRegardless];
+    [win makeKeyWindow];
+    if ([win contentView]) {
+        [win makeFirstResponder:[win contentView]];
+    }
+    // Also activate the app so it appears in Cmd+Tab
+    NSApplication *app = [NSApplication sharedApplication];
+    [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [app activate];
+    [[NSRunningApplication currentApplication]
+        activateWithOptions:NSApplicationActivateAllWindows |
+                           NSApplicationActivateIgnoringOtherApps];
+}
+
 void scribe_close_window(void *window) {
     [(NSWindow *)window close];
 }
@@ -1345,4 +1364,81 @@ void scribe_stackview_set_edge_insets(void *stackview,
     } else {
         NSLog(@"[Scribe:padding] Warning: view is %@, not NSStackView", [obj class]);
     }
+}
+
+// ============================================================================
+// Section 21: NSApplicationDelegate (Dock menu + Dock icon click)
+// ============================================================================
+
+typedef void (*dock_menu_callback_fn)(void);
+typedef void (*reopen_callback_fn)(void);
+typedef void (*will_terminate_callback_fn)(void);
+
+static NSMenu *g_dock_menu = nil;
+static dock_menu_callback_fn g_dock_menu_callback = NULL;
+static reopen_callback_fn g_reopen_callback = NULL;
+static will_terminate_callback_fn g_will_terminate_callback = NULL;
+
+@interface ScribeAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation ScribeAppDelegate
+
+// Right-click (or Ctrl+click) on Dock icon → return the Dock menu
+- (NSMenu *)applicationDockMenu:(NSApplication *)sender {
+    if (g_dock_menu_callback) {
+        g_dock_menu_callback();
+    }
+    return g_dock_menu;
+}
+
+// Single-click on Dock icon → open Preferences
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender
+                    hasVisibleWindows:(BOOL)hasVisibleWindows {
+    if (g_reopen_callback) {
+        g_reopen_callback();
+    }
+    return YES;
+}
+
+// Called before ANY termination (Cmd+Q, menu Quit, system shutdown, etc.)
+// This is the LAST chance to clean up resources like the whisper Metal context.
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    if (g_will_terminate_callback) {
+        g_will_terminate_callback();
+    }
+    return NSTerminateNow;
+}
+
+@end
+
+static ScribeAppDelegate *g_app_delegate = nil;
+
+// Create and install the app delegate on NSApp.
+void scribe_install_app_delegate(void) {
+    if (!g_app_delegate) {
+        g_app_delegate = [[ScribeAppDelegate alloc] init];
+    }
+    [[NSApplication sharedApplication] setDelegate:g_app_delegate];
+}
+
+// Set the NSMenu to be returned by applicationDockMenu:.
+void scribe_set_dock_menu(void *menu) {
+    g_dock_menu = (NSMenu *)menu;
+}
+
+// Install a callback invoked just before the Dock menu is shown (to refresh items).
+void scribe_install_dock_menu_callback(dock_menu_callback_fn callback) {
+    g_dock_menu_callback = callback;
+}
+
+// Install a callback invoked when the Dock icon is single-clicked.
+void scribe_install_reopen_callback(reopen_callback_fn callback) {
+    g_reopen_callback = callback;
+}
+
+// Install a callback invoked before ANY app termination (Cmd+Q, menu Quit, shutdown).
+// This is the safety net for cleaning up whisper Metal resources.
+void scribe_install_will_terminate_callback(will_terminate_callback_fn callback) {
+    g_will_terminate_callback = callback;
 }

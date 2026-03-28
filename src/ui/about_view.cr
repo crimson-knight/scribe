@@ -82,6 +82,14 @@ module Scribe::UI::AboutView
     support_label.accessibility_label = "Support email: st at agentc dot consulting"
     root << support_label
 
+    # Logs location
+    log_dir = Scribe::Settings::Manager.display_path(Scribe::Services::LogService.log_dir)
+    logs_label = ::UI::Label.new("Logs: #{log_dir}")
+    logs_label.font = ::UI::Font.new(size: 10.0, weight: :regular)
+    logs_label.text_color = secondary
+    logs_label.accessibility_label = "Log files location: #{log_dir}"
+    root << logs_label
+
     # Copyright
     year = Time.local.year
     copyright = ::UI::Label.new("© #{year} AgentC Consulting LLC")

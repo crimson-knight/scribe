@@ -113,6 +113,26 @@ module Scribe::UI::SettingsView
       nil
     }
     startup_group << login_toggle
+
+    # Show in Dock toggle
+    dock_status = Scribe::Settings::Manager.get("show_dock_icon") == "true"
+    dock_toggle = ::UI::Toggle.new("Show in Dock", is_on: dock_status)
+    dock_toggle.accessibility_label = dock_status ? "Show in Dock: enabled" : "Show in Dock: disabled"
+    dock_toggle.on_change = ->(new_state : Bool) {
+      Scribe::Settings::Manager.set("show_dock_icon", new_state ? "true" : "false")
+      if new_state
+        Scribe::Platform::MacOS::LibScribePlatform.scribe_set_activation_policy_regular(Scribe::Platform::MacOS::App.app_ref)
+      else
+        Scribe::Platform::MacOS::LibScribePlatform.scribe_set_activation_policy_accessory(Scribe::Platform::MacOS::App.app_ref)
+      end
+      Scribe::Platform::MacOS::App.reopen_settings
+      nil
+    }
+    startup_group << dock_toggle
+
+    dock_note = footnote("Show Scribe in the Dock for easy access when the menu bar icon is hidden.", secondary)
+    startup_group << dock_note
+
     root << startup_group
 
     # --- Whisper Model (GroupBox + PopUpButton + Save + Delete) ---

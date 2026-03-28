@@ -21,6 +21,8 @@ module Scribe::Settings
       "transcript_save_dir"   => "",
       "wizard_completed"      => "false",
       "recording_modes_json"  => "",
+      "log_retention_days"    => "30",
+      "show_dock_icon"        => "false",
     }
 
     @@cache = {} of String => String

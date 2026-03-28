@@ -20,6 +20,7 @@ module Scribe::Platform::MacOS
     fun scribe_set_content_view(window : Void*, view : Void*) : Void
     fun scribe_center_window(window : Void*) : Void
     fun scribe_make_key_and_order_front(window : Void*) : Void
+    fun scribe_order_window_front_regardless(window : Void*) : Void
     fun scribe_close_window(window : Void*) : Void
     fun scribe_show_window(window : Void*) : Void
 
@@ -141,6 +142,16 @@ module Scribe::Platform::MacOS
                                           top : Float64, left : Float64,
                                           bottom : Float64, right : Float64) : Void
 
+    # App Delegate — Dock menu + Dock icon click (Section 21)
+    fun scribe_install_app_delegate : Void
+    fun scribe_set_dock_menu(menu : Void*) : Void
+    alias DockMenuCallback = -> Void
+    alias ReopenCallback = -> Void
+    alias WillTerminateCallback = -> Void
+    fun scribe_install_dock_menu_callback(callback : DockMenuCallback) : Void
+    fun scribe_install_reopen_callback(callback : ReopenCallback) : Void
+    fun scribe_install_will_terminate_callback(callback : WillTerminateCallback) : Void
+
     # ObjC runtime (for selector lookup)
     fun sel_registerName(name : UInt8*) : Void*
   end
@@ -235,6 +246,10 @@ module Scribe::Platform::MacOS
       @@capture
     end
 
+    def self.app_ref : Void*
+      @@app
+    end
+
     @@settings_window : Void* = Pointer(Void).null
     @@settings_view : ::UI::VStack? = nil
     @@settings_renderer : ::UI::AppKit::Renderer? = nil
@@ -262,18 +277,20 @@ module Scribe::Platform::MacOS
     @@pp_transcript_dir : String = ""
     @@pp_output : String = ""
     @@pp_exit_code : Int32 = 0
+    @@cleanup_done : Bool = false
 
     def self.run
       # First: initialize application (DB, settings, dirs)
       init = Scribe::ProcessManagers::InitializeApplication.new
       init.perform
+      Scribe::Services::LogService.setup
 
       # Check for crashed recording from previous session
       repair = Scribe::ProcessManagers::RepairOrphanedRecordings.new
       repair.perform
       if repair.had_crash?
         repair.repaired_files.each do |path|
-          puts "[Scribe] Recovered recording: #{path}"
+          Scribe::Services::LogService.warn("Recovered recording from crashed session: #{path}")
         end
       end
 
@@ -305,12 +322,25 @@ module Scribe::Platform::MacOS
         App.on_paste_cycle_complete(success)
       })
 
-      # Create NSApplication as accessory (menu bar only, no dock icon)
+      # Create NSApplication — check dock icon preference
       @@app = LibScribePlatform.scribe_shared_application
-      LibScribePlatform.scribe_set_activation_policy_accessory(@@app)
+      if Scribe::Settings::Manager.get("show_dock_icon") == "true"
+        LibScribePlatform.scribe_set_activation_policy_regular(@@app)
+        Scribe::Services::LogService.info("Running with Dock icon enabled")
+      else
+        LibScribePlatform.scribe_set_activation_policy_accessory(@@app)
+      end
 
       # Setup menu bar and menu via MenuManager
       @@status_item, @@record_menu_item = MenuManager.setup(@@app, @@output_dir)
+
+      # Setup Dock menu + app delegate
+      LibScribePlatform.scribe_install_app_delegate
+      MenuManager.setup_dock_menu(@@output_dir)
+      LibScribePlatform.scribe_install_reopen_callback(->{ App.open_settings })
+      LibScribePlatform.scribe_install_dock_menu_callback(->{ MenuManager.refresh_dock_transcripts(@@output_dir) })
+      LibScribePlatform.scribe_install_will_terminate_callback(->{ App.cleanup_before_exit })
+      Scribe::Services::LogService.info("App delegate + dock menu installed")
 
       # Create the floating recording indicator (hidden until recording starts)
       @@recording_indicator = IndicatorManager.create_indicator
@@ -535,6 +565,17 @@ module Scribe::Platform::MacOS
             puts "[Scribe] No whisper model loaded -- transcription skipped"
           end
         else
+          active_mode = Scribe::ProcessManagers::RecordingModeManager.active_mode
+          if active_mode.system_audio
+            if LibScribePlatform.scribe_screen_capture_check == 0
+              LibScribePlatform.scribe_screen_capture_request
+              if LibScribePlatform.scribe_screen_capture_check == 0
+                show_error("Screen Recording permission required. Enable Scribe in System Settings → Privacy → Screen Recording, then restart.")
+                LibScribePlatform.scribe_open_system_settings("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture".to_unsafe)
+                return
+              end
+            end
+          end
           cap.perform
           IndicatorManager.update_status_recording(@@status_item, @@record_menu_item, @@recording_indicator, true)
           puts "[Scribe] Recording started..."
@@ -907,6 +948,31 @@ module Scribe::Platform::MacOS
       )
     end
 
+    def self.cleanup_before_exit
+      return if @@cleanup_done
+      @@cleanup_done = true
+      Scribe::Services::LogService.info("Cleaning up before exit...")
+      if cap = @@capture
+        if cap.recording?
+          cap.stop
+          Scribe::Services::LogService.info("Stopped active recording")
+        end
+      end
+      unless @@whisper_ctx.null?
+        LibScribePlatform.scribe_whisper_free(@@whisper_ctx)
+        @@whisper_ctx = Pointer(Void).null
+        Scribe::Services::LogService.info("Whisper context freed")
+      end
+      lock_path = Scribe::ProcessManagers::StartAudioCapture.lockfile_path
+      File.delete(lock_path) if File.exists?(lock_path)
+      Scribe::Services::LogService.close
+    end
+
+    def self.on_quit
+      cleanup_before_exit
+      LibScribePlatform.scribe_terminate_app(@@app)
+    end
+
     # Open the About Scribe window
     def self.open_about
       puts "[Scribe] Opening About..."
@@ -923,10 +989,8 @@ module Scribe::Platform::MacOS
       LibScribePlatform.scribe_stackview_set_edge_insets(about_ptr, 24.0, 24.0, 24.0, 24.0)
       LibScribePlatform.scribe_set_content_view(window, about_ptr)
       LibScribePlatform.scribe_center_window(window)
-      LibScribePlatform.scribe_make_key_and_order_front(window)
-      LibScribePlatform.scribe_activate_app(@@app)
+      LibScribePlatform.scribe_order_window_front_regardless(window)
 
-      # Store references to prevent GC
       @@about_window = window
       @@about_native_view = native_view
     end
@@ -937,9 +1001,7 @@ module Scribe::Platform::MacOS
 
       # If settings window already exists, just bring it to front
       unless @@settings_window.null?
-        LibScribePlatform.scribe_set_activation_policy_regular(@@app)
-        LibScribePlatform.scribe_make_key_and_order_front(@@settings_window)
-        LibScribePlatform.scribe_activate_app(@@app)
+        LibScribePlatform.scribe_order_window_front_regardless(@@settings_window)
         return
       end
 
@@ -958,13 +1020,7 @@ module Scribe::Platform::MacOS
         LibScribePlatform.scribe_stackview_set_edge_insets(settings_ptr, 20.0, 20.0, 20.0, 20.0)
         LibScribePlatform.scribe_set_content_view(@@settings_window, settings_ptr)
         LibScribePlatform.scribe_center_window(@@settings_window)
-        LibScribePlatform.scribe_make_key_and_order_front(@@settings_window)
-
-        # Activate AFTER window is created and ordered front
-        LibScribePlatform.scribe_activate_app(@@app)
-
-        # DO NOT set back to accessory — macOS will close the window.
-        # The dock icon shows while settings is open (standard macOS behavior).
+        LibScribePlatform.scribe_order_window_front_regardless(@@settings_window)
       rescue ex
         STDERR.puts "[Scribe] Settings window error: #{ex.message}"
         STDERR.puts ex.backtrace.join("\n") if ex.backtrace?
@@ -1018,11 +1074,7 @@ module Scribe::Platform::MacOS
 
       # Set content and bring to front
       LibScribePlatform.scribe_set_content_view(@@wizard_window, native_ptr)
-      LibScribePlatform.scribe_make_key_and_order_front(@@wizard_window)
-
-      # Schedule async activation — fires after the NSApp run loop has started.
-      # This is critical: activation before the run loop has no effect.
-      LibScribePlatform.scribe_bring_window_to_front_async(@@wizard_window)
+      LibScribePlatform.scribe_order_window_front_regardless(@@wizard_window)
     end
 
     # Update wizard to a specific step (replaces content, keeps window)
@@ -1215,6 +1267,14 @@ module Scribe::Platform::MacOS
           @@capture = Scribe::ProcessManagers::StartAudioCapture.new(output_directory: @@output_dir)
           MenuManager.update_output_dir(Scribe::Settings::Manager.display_path(@@output_dir))
           puts "[Scribe] Output directory updated to: #{@@output_dir}"
+        when "show_dock_icon"
+          show = data["value"]? == "true"
+          if show
+            LibScribePlatform.scribe_set_activation_policy_regular(@@app)
+          else
+            LibScribePlatform.scribe_set_activation_policy_accessory(@@app)
+          end
+          Scribe::Services::LogService.info("Dock icon: #{show ? "enabled" : "disabled"}")
         end
       end
     end
