@@ -23,6 +23,7 @@ module Scribe::Settings
       "recording_modes_json"  => "",
       "log_retention_days"    => "30",
       "show_dock_icon"        => "false",
+      "post_process_timeout"  => "300",
     }
 
     @@cache = {} of String => String

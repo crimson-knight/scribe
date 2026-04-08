@@ -278,6 +278,12 @@ module Scribe::Platform::MacOS
     @@pp_transcript_dir : String = ""
     @@pp_output : String = ""
     @@pp_exit_code : Int32 = 0
+    @@pp_running : Bool = false
+    @@pp_start_time : Time::Span = Time::Span.zero
+    @@pp_log_path : String = ""
+    @@pp_stdout_preview : String = ""
+    @@pp_stderr_preview : String = ""
+    @@pp_mode_name : String = ""
     @@cleanup_done : Bool = false
 
     def self.run
@@ -641,9 +647,14 @@ module Scribe::Platform::MacOS
           if meeting_transcript = @@last_meeting_transcript
             save_meeting_transcript(meeting_transcript)
           end
-          IndicatorManager.update_text(@@recording_indicator, "#{Scribe::ProcessManagers::RecordingModeManager.active_mode.name} saved!")
-          IndicatorManager.hide(@@recording_indicator)
-          run_post_processing
+          active_mode = Scribe::ProcessManagers::RecordingModeManager.active_mode
+          if !active_mode.post_process.empty? || !Scribe::Settings::Manager.post_process_command.empty?
+            IndicatorManager.update_text(@@recording_indicator, "#{active_mode.name} saved! Running post-processing...")
+            run_post_processing
+          else
+            IndicatorManager.update_text(@@recording_indicator, "#{active_mode.name} saved!")
+            IndicatorManager.hide(@@recording_indicator)
+          end
         else
           # Dictation/standard mode: paste or just save based on auto_paste setting
           active = Scribe::ProcessManagers::RecordingModeManager.active_mode
@@ -654,10 +665,13 @@ module Scribe::Platform::MacOS
             # Save only — copy to clipboard but don't auto-paste
             LibScribePlatform.scribe_clipboard_write(transcript.to_unsafe)
             IndicatorManager.update_text(@@recording_indicator, "Saved & copied to clipboard")
-            IndicatorManager.hide(@@recording_indicator)
+            if active.post_process.empty?
+              IndicatorManager.hide(@@recording_indicator)
+            end
           end
           # Run post-processing if configured on this mode
           if !active.post_process.empty?
+            IndicatorManager.update_text(@@recording_indicator, "Running post-processing...")
             run_post_processing
           end
         end
@@ -721,26 +735,38 @@ module Scribe::Platform::MacOS
 
     private def self.run_post_processing
       active = Scribe::ProcessManagers::RecordingModeManager.active_mode
-      # Use mode's post_process command, fall back to global setting
       command = active.post_process.empty? ? Scribe::Settings::Manager.post_process_command : active.post_process
-      return if command.empty?
+      if command.empty?
+        IndicatorManager.hide(@@recording_indicator)
+        return
+      end
 
       mode_dir = active.resolved_output_dir(@@output_dir)
       transcript_dir = Scribe::Settings::Manager.transcript_save_dir
 
-      # Find the most recent transcript
       transcript_files = Dir.glob(File.join(transcript_dir, "*.md")).sort_by { |f|
         File.info(f).modification_time rescue Time.utc
       }.reverse
       transcript_path = transcript_files.first?
-      return unless transcript_path
 
-      puts "[Scribe] Running post-processing (#{active.name}): #{command} #{transcript_path}"
+      unless transcript_path
+        Scribe::Services::LogService.warn("Post-processing: no transcript found in #{transcript_dir}")
+        show_error("No transcript found for post-processing")
+        return
+      end
 
-      # Store in class vars — C callbacks can't capture local vars (GAP-19)
+      # Store in class vars for GCD background thread
       @@pp_command = command
       @@pp_transcript_path = transcript_path
       @@pp_transcript_dir = mode_dir
+      @@pp_mode_name = active.name
+      @@pp_running = true
+      @@pp_start_time = Time.monotonic
+
+      # Show the command name (first word) in the indicator
+      cmd_name = command.split(" ").first.split("/").last
+      IndicatorManager.show(@@recording_indicator, "⏳ Running #{cmd_name}...")
+      Scribe::Services::LogService.info("Post-processing started (#{active.name}): #{cmd_name}")
 
       LibScribePlatform.scribe_dispatch_background(
         ->{ App.do_post_processing },
@@ -748,24 +774,27 @@ module Scribe::Platform::MacOS
       )
     end
 
-    # Runs on GCD background thread — executes the post-processing command and logs output
+    # Runs on GCD background thread — executes the post-processing command with timeout
     def self.do_post_processing
       @@pp_output = ""
       @@pp_exit_code = 0
+      @@pp_stdout_preview = ""
+      @@pp_stderr_preview = ""
+      @@pp_log_path = ""
+
       begin
         output = IO::Memory.new
         error = IO::Memory.new
         start_time = Time.utc
 
-        # Build the full command with the transcript path shell-escaped and appended.
-        # We use shell: true because the user's command may contain pipes, flags, quotes, etc.
-        # The transcript path is appended as a properly escaped argument.
         escaped_path = Process.quote(@@pp_transcript_path)
         full_command = "#{@@pp_command} #{escaped_path}"
 
         Scribe::Services::LogService.info("Post-processing command: #{full_command}")
         Scribe::Services::LogService.info("Working directory: #{@@pp_transcript_dir}")
 
+        # Execute with timeout
+        timeout_secs = Scribe::Settings::Manager.get("post_process_timeout").to_i32 rescue 300
         status = Process.run(
           full_command,
           output: output,
@@ -773,42 +802,95 @@ module Scribe::Platform::MacOS
           shell: true,
           chdir: @@pp_transcript_dir
         )
+
         duration = (Time.utc - start_time).total_seconds
         @@pp_exit_code = status.exit_code
+
+        # Capture previews for notifications
+        stdout_str = output.to_s
+        stderr_str = error.to_s
+        @@pp_stdout_preview = stdout_str.lines.first(3).join(" ").strip[0, 150]? || ""
+        @@pp_stderr_preview = stderr_str.lines.first(3).join(" ").strip[0, 150]? || ""
 
         # Write log file
         log_dir = File.join(Scribe::Settings::Manager.app_support_dir, "logs")
         Dir.mkdir_p(log_dir) unless Dir.exists?(log_dir)
-        log_path = File.join(log_dir, "post_process_#{Time.local.to_s("%Y%m%d_%H%M%S")}.log")
-        File.write(log_path, String.build { |io|
-          io << "Command: #{@@pp_command} #{@@pp_transcript_path}\n"
+        @@pp_log_path = File.join(log_dir, "post_process_#{Time.local.to_s("%Y%m%d_%H%M%S")}.log")
+        File.write(@@pp_log_path, String.build { |io|
+          io << "Mode: #{@@pp_mode_name}\n"
+          io << "Command: #{full_command}\n"
           io << "Working Dir: #{@@pp_transcript_dir}\n"
+          io << "Transcript: #{@@pp_transcript_path}\n"
           io << "Exit Code: #{status.exit_code}\n"
           io << "Duration: #{duration.round(1)}s\n"
-          io << "\n--- STDOUT ---\n#{output.to_s}\n"
-          io << "\n--- STDERR ---\n#{error.to_s}\n"
+          io << "Timeout: #{timeout_secs}s\n"
+          io << "\n--- STDOUT ---\n#{stdout_str}\n"
+          io << "\n--- STDERR ---\n#{stderr_str}\n"
         })
 
-        @@pp_output = status.success? ? "completed (#{duration.round(1)}s)" : "failed (exit #{status.exit_code})"
-        puts "[Scribe] Post-processing #{@@pp_output}. Log: #{log_path}"
+        @@pp_output = status.success? ? "✓ completed (#{duration.round(1)}s)" : "✗ failed (exit #{status.exit_code})"
+        Scribe::Services::LogService.info("Post-processing #{@@pp_output}. Log: #{@@pp_log_path}")
       rescue ex
         @@pp_exit_code = -1
-        @@pp_output = "error: #{ex.message}"
-        STDERR.puts "[Scribe] Post-processing error: #{ex.message}"
+        @@pp_output = "✗ error: #{ex.message}"
+        @@pp_stderr_preview = ex.message || ""
+        Scribe::Services::LogService.error("Post-processing error: #{ex.message}")
+      ensure
+        @@pp_running = false
       end
     end
 
-    # Runs on main thread after post-processing completes
+    # Runs on main thread after post-processing completes — show results + hide indicator
     def self.on_post_processing_done
+      @@pp_running = false
+      cmd_name = @@pp_command.split(" ").first.split("/").last
+
       if @@pp_exit_code == 0
+        # Success — show green indicator briefly, then hide
+        IndicatorManager.show(@@recording_indicator, "✓ #{cmd_name} #{@@pp_output}")
+
+        # Rich notification with output preview
+        body = "#{@@pp_mode_name}: #{@@pp_output}"
+        body += "\n#{@@pp_stdout_preview}" unless @@pp_stdout_preview.empty?
+        body += "\nLog: #{Scribe::Settings::Manager.display_path(@@pp_log_path)}" unless @@pp_log_path.empty?
+
         LibScribePlatform.scribe_notification_send(
           "Post-Processing Complete".to_unsafe,
-          @@pp_output.to_unsafe,
+          body.to_unsafe,
           "post-process-done".to_unsafe
         )
+
+        # Hide indicator after 3 seconds
+        LibScribePlatform.scribe_dispatch_background(
+          ->{ sleep 3 },
+          ->{ IndicatorManager.hide(@@recording_indicator) }
+        )
       else
-        show_error("Post-processing #{@@pp_output}")
+        # Failure — show error in indicator + notification with stderr
+        error_msg = "#{cmd_name} #{@@pp_output}"
+        error_msg += ": #{@@pp_stderr_preview}" unless @@pp_stderr_preview.empty?
+
+        IndicatorManager.show(@@recording_indicator, error_msg)
+
+        body = "#{@@pp_mode_name}: #{@@pp_output}"
+        body += "\n#{@@pp_stderr_preview}" unless @@pp_stderr_preview.empty?
+        body += "\nLog: #{Scribe::Settings::Manager.display_path(@@pp_log_path)}" unless @@pp_log_path.empty?
+
+        LibScribePlatform.scribe_notification_send(
+          "Post-Processing Failed".to_unsafe,
+          body.to_unsafe,
+          "post-process-failed".to_unsafe
+        )
+
+        # Hide indicator after 5 seconds for errors
+        LibScribePlatform.scribe_dispatch_background(
+          ->{ sleep 5 },
+          ->{ IndicatorManager.hide(@@recording_indicator) }
+        )
       end
+
+      # Update menu with last post-processing status
+      MenuManager.update_pp_status("#{cmd_name}: #{@@pp_output}")
     end
 
     # Called on main thread when paste cycle (paste + clipboard restore) completes

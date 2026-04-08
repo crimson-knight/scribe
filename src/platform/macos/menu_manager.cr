@@ -12,6 +12,7 @@ module Scribe::Platform::MacOS
   module MenuManager
     @@model_menu_item : Void* = Pointer(Void).null
     @@dir_menu_item : Void* = Pointer(Void).null
+    @@pp_status_item : Void* = Pointer(Void).null
     @@transcripts_submenu : Void* = Pointer(Void).null
     @@transcripts_parent_item : Void* = Pointer(Void).null
     @@recent_transcript_paths = [] of String
@@ -74,6 +75,10 @@ module Scribe::Platform::MacOS
 
       LibScribePlatform.scribe_add_menu_separator(menu)
 
+      # Last post-processing status
+      @@pp_status_item = LibScribePlatform.scribe_add_menu_item(menu, "(no post-processing runs)".to_unsafe, "".to_unsafe)
+      LibScribePlatform.scribe_set_menu_item_enabled(@@pp_status_item, 0)
+
       # Output directory info
       display_dir = Scribe::Settings::Manager.display_path(output_dir)
       @@dir_menu_item = LibScribePlatform.scribe_add_menu_item(menu, "Output: #{display_dir}".to_unsafe, "".to_unsafe)
@@ -114,6 +119,13 @@ module Scribe::Platform::MacOS
       unless @@model_menu_item.null?
         title = ModelInfo.menu_title(model_name)
         LibScribePlatform.scribe_set_menu_item_title(@@model_menu_item, title.to_unsafe)
+      end
+    end
+
+    # Update the last post-processing status in the menu.
+    def self.update_pp_status(status : String)
+      unless @@pp_status_item.null?
+        LibScribePlatform.scribe_set_menu_item_title(@@pp_status_item, status.to_unsafe)
       end
     end
 
