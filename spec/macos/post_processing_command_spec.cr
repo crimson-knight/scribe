@@ -29,13 +29,15 @@ describe "Post-processing command construction" do
     end
 
     it "handles complex commands with quotes and flags" do
-      command = %q(claude -p "I am scanning documents into a folder")
+      command = %q(claude -p "I am scanning documents into a folder" --allowedTools "Read,Write,Edit,Bash" --output-format text)
       path = "/tmp/scribe_20260328.md"
       escaped_path = Process.quote(path)
       full = "#{command} #{escaped_path}"
 
       # The full command should have the user's quoted -p argument intact
       full.should contain(%q(-p "I am scanning documents into a folder"))
+      full.should contain("--allowedTools")
+      full.should contain("--output-format text")
       # And the path should be at the end
       full.should end_with("/tmp/scribe_20260328.md")
     end
@@ -48,8 +50,8 @@ describe "Post-processing command construction" do
       full.should eq("cat | process.sh /tmp/test.md")
     end
 
-    it "handles the real claude command" do
-      command = %q(claude -p "I am scanning documents into a folder and I want your help reviewing, renaming and organizing these files. I have provided you a recording transcript with the latest details around what I think these documents are about.")
+    it "handles a real claude command with allowedTools" do
+      command = %q(claude -p "I am scanning documents into a folder and I want your help reviewing, renaming and organizing these files. I have provided you a recording transcript with the latest details around what I think these documents are about." --allowedTools "Read,Write,Edit,Bash" --output-format text)
       path = "/Users/crimsonknight/Documents/Scribe/scribe_20260328_120000.md"
       escaped_path = Process.quote(path)
       full = "#{command} #{escaped_path}"

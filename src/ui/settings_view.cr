@@ -359,7 +359,7 @@ module Scribe::UI::SettingsView
 
     # Post-Processing
     root << section_header("Post-Processing Command:", primary)
-    pp_field = ::UI::TextField.new("e.g. claude -p 'Summarize' --output-format text")
+    pp_field = ::UI::TextField.new("e.g. claude -p 'Summarize this' --allowedTools 'Read,Write' --output-format text")
     pp_field.text = mode.post_process
     pp_field.accessibility_label = "Post-processing command for this mode"
     root << pp_field
