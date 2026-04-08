@@ -29,7 +29,7 @@ describe "Post-processing command construction" do
     end
 
     it "handles complex commands with quotes and flags" do
-      command = %q(wild_claude -p "I am scanning documents into a folder")
+      command = %q(claude -p "I am scanning documents into a folder")
       path = "/tmp/scribe_20260328.md"
       escaped_path = Process.quote(path)
       full = "#{command} #{escaped_path}"
@@ -48,8 +48,8 @@ describe "Post-processing command construction" do
       full.should eq("cat | process.sh /tmp/test.md")
     end
 
-    it "handles the real wild_claude command" do
-      command = %q(wild_claude -p "I am scanning documents into a folder and I want your help reviewing, renaming and organizing these files. I have provided you a recording transcript with the latest details around what I think these documents are about.")
+    it "handles the real claude command" do
+      command = %q(claude -p "I am scanning documents into a folder and I want your help reviewing, renaming and organizing these files. I have provided you a recording transcript with the latest details around what I think these documents are about.")
       path = "/Users/crimsonknight/Documents/Scribe/scribe_20260328_120000.md"
       escaped_path = Process.quote(path)
       full = "#{command} #{escaped_path}"
